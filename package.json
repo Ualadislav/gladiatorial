@@ -1,0 +1,15 @@
+{
+  "name": "gladiators-mini-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @gladiators/web",
+    "dev:server": "npm run dev -w @gladiators/server",
+    "build": "npm run build -w @gladiators/web && npm run build -w @gladiators/server",
+    "typecheck": "npm run typecheck -w @gladiators/web && npm run typecheck -w @gladiators/server"
+  }
+}
