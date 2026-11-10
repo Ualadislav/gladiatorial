@@ -1,4 +1,16 @@
 import { createArena } from './arena';
+import portraitUrl from '../../../prints/весь.png';
+import {
+  BOX_STARS,
+  SUBSCRIPTION_STARS,
+  developerToolsEnabled,
+  grantDeveloperResources,
+  openBox,
+  purchaseBox,
+  purchaseSubscription,
+  subscriptionActive,
+  watchRewardedAd,
+} from './monetization';
 import {
   DEFAULT_PROFILE,
   STORAGE_KEY,
@@ -8,11 +20,16 @@ import {
 } from './types';
 import './style.css';
 
-type ViewName = 'arena' | 'forge' | 'hero';
+type ViewName = 'arena' | 'forge' | 'hero' | 'market';
 type ApiResponse<T> = T & { error?: string };
 
-const app = document.querySelector<HTMLDivElement>('#app');
-if (!app) throw new Error('Application root was not found.');
+function getAppRoot(): HTMLDivElement {
+  const root = document.querySelector<HTMLDivElement>('#app');
+  if (!root) throw new Error('Application root was not found.');
+  return root;
+}
+
+const app = getAppRoot();
 
 const telegram = window.Telegram?.WebApp;
 telegram?.ready();
@@ -38,6 +55,9 @@ function loadLocalProfile(): PlayerProfile {
       unlockedSkins: Array.isArray(parsed.unlockedSkins)
         ? parsed.unlockedSkins
         : DEFAULT_PROFILE.unlockedSkins,
+      boxes: typeof parsed.boxes === 'number' ? parsed.boxes : 0,
+      subscriptionUntil: typeof parsed.subscriptionUntil === 'number' ? parsed.subscriptionUntil : 0,
+      developer: developerToolsEnabled() && parsed.developer === true,
     };
   } catch (error) {
     console.error('Could not read the saved gladiator profile.', error);
@@ -162,6 +182,7 @@ function render(): void {
         <div class="topbar-right">
           <span class="connection ${apiConnected ? 'online' : ''}"><i></i>${apiConnected ? 'СИНХРОНИЗИРОВАНО' : 'АВТОНОМНО'}</span>
           <span class="wallet"><span class="coin">✦</span><strong>${profile.gold}</strong></span>
+          <span class="wallet boxes-wallet"><span class="coin">▣</span><strong>${profile.boxes}</strong></span>
           <button class="avatar" data-view="hero" aria-label="Профиль">${profile.username.slice(0, 1).toUpperCase()}</button>
         </div>
       </header>
@@ -171,6 +192,7 @@ function render(): void {
           <button class="nav-item ${activeView === 'arena' ? 'active' : ''}" data-view="arena"><span class="nav-icon">⚔</span> Арена <span class="nav-arrow">›</span></button>
           <button class="nav-item ${activeView === 'forge' ? 'active' : ''}" data-view="forge"><span class="nav-icon">⌘</span> Арсенал</button>
           <button class="nav-item ${activeView === 'hero' ? 'active' : ''}" data-view="hero"><span class="nav-icon">♙</span> Гладиатор</button>
+          <button class="nav-item ${activeView === 'market' ? 'active' : ''}" data-view="market"><span class="nav-icon">▣</span> Лавка</button>
           <div class="side-card">
             <div class="side-card-top"><span class="rank-emblem">Ⅰ</span><span>ТЕКУЩИЙ РАНГ</span></div>
             <strong>Новичок</strong>
@@ -180,13 +202,14 @@ function render(): void {
           <div class="sidebar-footer">СОЗДАНО ДЛЯ АРЕНЫ<br><span>Сезон I · Пески славы</span></div>
         </aside>
         <section class="content">
-          ${activeView === 'arena' ? renderArena() : activeView === 'forge' ? renderForge() : renderHero()}
+          ${activeView === 'arena' ? renderArena() : activeView === 'forge' ? renderForge() : activeView === 'hero' ? renderHero() : renderMarket()}
         </section>
       </main>
       <nav class="mobile-nav">
         <button data-view="arena" class="${activeView === 'arena' ? 'active' : ''}"><span>⚔</span>Арена</button>
         <button data-view="forge" class="${activeView === 'forge' ? 'active' : ''}"><span>⌘</span>Арсенал</button>
         <button data-view="hero" class="${activeView === 'hero' ? 'active' : ''}"><span>♙</span>Герой</button>
+        <button data-view="market" class="${activeView === 'market' ? 'active' : ''}"><span>▣</span>Лавка</button>
       </nav>
       <div id="toast" class="toast" role="status"></div>
     </div>`;
@@ -194,6 +217,7 @@ function render(): void {
   if (activeView === 'arena') mountArena();
   if (activeView === 'forge') bindForge();
   if (activeView === 'hero') bindHero();
+  if (activeView === 'market') bindMarket();
 }
 
 function renderArena(): string {
@@ -252,21 +276,89 @@ function skinCard(skin: SkinName, title: string, label: string, price: number): 
 function renderHero(): string {
   return `
     <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> ЗАЛ СЛАВЫ</div><h1>Твоя <em>легенда.</em></h1><p>Каждый великий боец когда-то начинал с первой победы.</p></div></div>
-    <section class="hero-card"><div class="hero-portrait skin-${profile.skin}"><div class="portrait-glow"></div><div class="portrait-helmet"></div><div class="portrait-face"></div><div class="portrait-armor"></div><span class="portrait-level">УР. ${profile.level}</span></div><div class="hero-details"><div class="eyebrow">ГЛАДИАТОР · НОВИЧОК</div><h2>${escapeHtml(profile.username)}</h2><p>Боец песчаной арены</p><div class="hero-xp"><span>ОПЫТ</span><b>${profile.xp % 100} / 100 XP</b></div><div class="stat-progress"><i style="width:${profile.xp % 100}%"></i></div><div class="hero-stat-grid"><div><small>СИЛА</small><strong>${profile.strength}</strong></div><div><small>ЗДОРОВЬЕ</small><strong>${profile.vitality}</strong></div><div><small>ОРУЖИЕ</small><strong>+${profile.weapon}</strong></div><div><small>ПОБЕДЫ</small><strong>${Math.floor(profile.xp / 35)}</strong></div></div></div></section>
+    <section class="hero-card"><div class="hero-portrait skin-${profile.skin}"><div class="portrait-glow"></div><img class="portrait-art" src="${portraitUrl}" alt=""><span class="portrait-level">УР. ${profile.level}</span></div><div class="hero-details"><div class="eyebrow">ГЛАДИАТОР · НОВИЧОК</div><h2>${escapeHtml(profile.username)}</h2><p>Боец песчаной арены</p><div class="hero-xp"><span>ОПЫТ</span><b>${profile.xp % 100} / 100 XP</b></div><div class="stat-progress"><i style="width:${profile.xp % 100}%"></i></div><div class="hero-stat-grid"><div><small>СИЛА</small><strong>${profile.strength}</strong></div><div><small>ЗДОРОВЬЕ</small><strong>${profile.vitality}</strong></div><div><small>ОРУЖИЕ</small><strong>+${profile.weapon}</strong></div><div><small>ПОБЕДЫ</small><strong>${Math.floor(profile.xp / 35)}</strong></div></div></div></section>
     <div class="section-title hero-section-title"><span>ПРОГРЕСС</span><i></i><small>СЕЗОН I</small></div><section class="progress-card"><div class="progress-emblem">Ⅰ</div><div><strong>Пески славы</strong><p>Сражайся, зарабатывай опыт и открывай новые облики.</p></div><div class="progress-level"><small>ТЕКУЩИЙ УРОВЕНЬ</small><b>${profile.level}</b></div></section>
     <button class="primary-button hero-arena-button" data-view="arena">ВЫЙТИ НА АРЕНУ <b>→</b></button>`;
+}
+
+function renderMarket(): string {
+  const subscribed = subscriptionActive(profile);
+  const until = subscribed
+    ? new Date(profile.subscriptionUntil).toLocaleDateString('ru-RU')
+    : 'не активна';
+  const developer = developerToolsEnabled()
+    ? `<button class="primary-button developer-grant" data-developer="grant"><span>РЕСУРСЫ РАЗРАБОТЧИКА</span><b>→</b></button><p class="market-note">Только в этой сборке для разработки: золото, все облики, подписка и 20 ящиков. Реклама и счета Stars после этого не требуются.</p>`
+    : '';
+  return `
+    <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> TELEGRAM · STARS</div><h1>Лавка <em>арены.</em></h1><p>Реклама, подписка и ящики остаются внутри мини-приложения.</p></div></div>
+    <div class="market-grid">
+      <article class="market-card">
+        <small>ПОДПИСКА · 30 ДНЕЙ</small>
+        <strong>Пески славы</strong>
+        <p>+15% золота за бой и ящик при оформлении. Оплата — ${SUBSCRIPTION_STARS} звёзд Telegram.</p>
+        <div class="reward-row"><span>СТАТУС</span><strong>${subscribed ? `до ${until}` : until}</strong></div>
+        <button class="primary-button" data-market="subscribe"><span>${subscribed ? 'ПРОДЛИТЬ' : 'ОФОРМИТЬ'}</span><b>★ ${SUBSCRIPTION_STARS}</b></button>
+      </article>
+      <article class="market-card">
+        <small>РЕКЛАМА</small>
+        <strong>Ролик спонсора</strong>
+        <p>Досмотрите рекламу в окне мини-приложения и получите один ящик.</p>
+        <button class="primary-button" data-market="ad"><span>СМОТРЕТЬ</span><b>+1 ▣</b></button>
+      </article>
+      <article class="market-card">
+        <small>ЯЩИКИ · ${profile.boxes}</small>
+        <strong>Ящик арены</strong>
+        <p>Золото, сила, оружие или новый облик. Покупка — ${BOX_STARS} звёзд Telegram.</p>
+        <div class="market-actions">
+          <button class="primary-button" data-market="buy-box"><span>КУПИТЬ</span><b>★ ${BOX_STARS}</b></button>
+          <button class="upgrade-button" data-market="open-box"><span>ОТКРЫТЬ</span><b>▣</b></button>
+        </div>
+      </article>
+    </div>
+    ${developer}`;
 }
 
 function bindNavigation(): void {
   app.querySelectorAll<HTMLElement>('[data-view]').forEach((button) => {
     button.addEventListener('click', () => {
       const view = button.dataset.view;
-      if (view === 'arena' || view === 'forge' || view === 'hero') {
+      if (view === 'arena' || view === 'forge' || view === 'hero' || view === 'market') {
         activeView = view;
         render();
       }
     });
   });
+}
+
+function bindMarket(): void {
+  app.querySelector('[data-developer="grant"]')?.addEventListener('click', () => {
+    grantDeveloperResources(profile);
+    saveLocalProfile();
+    render();
+    showToast('Ресурсы разработчика выданы.');
+  });
+  app.querySelector('[data-market="subscribe"]')?.addEventListener('click', () => {
+    void runMarketAction(() => purchaseSubscription(profile));
+  });
+  app.querySelector('[data-market="ad"]')?.addEventListener('click', () => {
+    void runMarketAction(() => watchRewardedAd(profile));
+  });
+  app.querySelector('[data-market="buy-box"]')?.addEventListener('click', () => {
+    void runMarketAction(() => purchaseBox(profile));
+  });
+  app.querySelector('[data-market="open-box"]')?.addEventListener('click', () => {
+    const message = openBox(profile);
+    saveLocalProfile();
+    render();
+    showToast(message);
+  });
+}
+
+async function runMarketAction(action: () => Promise<string>): Promise<void> {
+  const message = await action();
+  saveLocalProfile();
+  render();
+  showToast(message);
 }
 
 function bindForge(): void {
@@ -363,16 +455,17 @@ function onArenaEvent(event: string, value?: unknown): void {
     battleStarted = false;
     app.querySelector<HTMLButtonElement>('#attack-button')?.setAttribute('disabled', '');
     app.querySelector<HTMLButtonElement>('#block-button')?.setAttribute('disabled', '');
-    profile.gold += result.gold;
+    const gold = subscriptionActive(profile) ? Math.round(result.gold * 1.15) : result.gold;
+    profile.gold += gold;
     profile.xp += result.xp;
     while (profile.xp >= 100) {
       profile.xp -= 100;
       profile.level += 1;
     }
     saveLocalProfile();
-    showToast(`${result.won ? 'Победа!' : 'Бой окончен.'} +${result.gold} золота · +${result.xp} XP`);
+    showToast(`${result.won ? 'Победа!' : 'Бой окончен.'} +${gold} золота · +${result.xp} XP`);
     const status = document.querySelector('#battle-status');
-    if (status) status.textContent = `${result.won ? 'Победа! ' : 'Поражение. '}Награда: ${result.gold} золота · ${result.xp} XP`;
+    if (status) status.textContent = `${result.won ? 'Победа! ' : 'Поражение. '}Награда: ${gold} золота · ${result.xp} XP`;
     window.setTimeout(() => {
       if (activeView === 'arena') render();
     }, 2400);
@@ -395,5 +488,7 @@ function escapeHtml(value: string): string {
   })[character] ?? character);
 }
 
-await connectProfile();
-render();
+void (async () => {
+  await connectProfile();
+  render();
+})();

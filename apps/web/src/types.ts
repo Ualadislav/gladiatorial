@@ -11,6 +11,9 @@ export interface PlayerProfile {
   weapon: number;
   skin: SkinName;
   unlockedSkins: SkinName[];
+  boxes: number;
+  subscriptionUntil: number;
+  developer: boolean;
 }
 
 export const DEFAULT_PROFILE: PlayerProfile = {
@@ -23,6 +26,9 @@ export const DEFAULT_PROFILE: PlayerProfile = {
   weapon: 1,
   skin: 'bronze',
   unlockedSkins: ['bronze'],
+  boxes: 0,
+  subscriptionUntil: 0,
+  developer: false,
 };
 
 export const STORAGE_KEY = 'gladiators.profile.v1';

@@ -160,6 +160,23 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
 .reward-row strong { color: var(--gold-bright); font-size: 10px; }
 .primary-button { width: 100%; min-height: 39px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #d0ad6c66; background: linear-gradient(100deg, #a1783e2e, #c59b5d17); color: #e5cc98; font-size: 8px; font-weight: 700; letter-spacing: .9px; cursor: pointer; }
 .primary-button:hover { background-color: #caa56826; }
+.market-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.market-card { min-height: 230px; padding: 18px 16px 16px; display: flex; flex-direction: column; border: 1px solid #caa56826; background: #191916; }
+.market-card small { color: var(--gold); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
+.market-card strong { margin-top: 12px; font: 500 20px Manrope, sans-serif; }
+.market-card p { margin: 10px 0 0; color: #948c7e; font-size: 10px; line-height: 1.6; }
+.market-card .reward-row { margin-top: auto; }
+.market-card .primary-button { margin-top: 12px; }
+.market-actions { margin-top: auto; display: grid; grid-template-columns: 1fr 92px; gap: 8px; align-items: center; }
+.market-note { max-width: 640px; margin: 16px 0 0; color: #8d8678; font-size: 10px; line-height: 1.6; }
+.developer-grant { max-width: 360px; margin-top: 18px; }
+.rewarded-ad { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: #0c0b09cc; }
+.rewarded-card { width: min(420px, 100%); padding: 22px 20px 16px; border: 1px solid #caa56855; background: #1b1915; text-align: center; }
+.rewarded-card small { color: var(--gold); font-size: 8px; font-weight: 700; letter-spacing: 1.4px; }
+.rewarded-card strong { display: block; margin-top: 10px; font: 500 24px Manrope, sans-serif; }
+.rewarded-card p { margin: 10px 0 0; color: #9a9284; font-size: 11px; line-height: 1.6; }
+.rewarded-card b { display: block; margin: 16px 0; color: var(--gold-bright); font: 600 28px Manrope, sans-serif; }
+#rewarded-dismiss { margin-top: 8px; border: 0; background: none; color: #8a8376; font-size: 9px; cursor: pointer; }
 .cosmetics-title { margin-top: 25px; }
 .skin-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .skin-card { min-height: 70px; padding: 10px; display: flex; align-items: center; gap: 9px; border: 1px solid #ffffff12; background: #191916; text-align: left; cursor: pointer; }
@@ -176,11 +193,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
 .hero-card { min-height: 272px; padding: 20px; display: grid; grid-template-columns: 210px 1fr; gap: 30px; border: 1px solid #caa56826; background: linear-gradient(135deg, #1c1b17, #161613); }
 .hero-portrait { position: relative; min-height: 225px; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 62%, #b38a4a24, transparent 57%), #11110f; }
 .portrait-glow { position: absolute; bottom: 14px; width: 145px; height: 45px; border-radius: 50%; background: #caa56817; filter: blur(15px); }
-.portrait-helmet { z-index: 1; width: 73px; height: 48px; margin-top: 18px; border: 2px solid #d0b170; border-radius: 30px 30px 12px 12px; background: linear-gradient(135deg, #a4874f, #66502f); }
-.portrait-face { z-index: 2; width: 54px; height: 56px; margin-top: -17px; border-radius: 12px 12px 22px 22px; background: linear-gradient(120deg, #d0a079, #875f46); }
-.portrait-armor { z-index: 1; width: 112px; height: 88px; margin-top: -2px; border: 2px solid #bf9a5e; border-radius: 36px 36px 10px 10px; background: linear-gradient(110deg, #82673c, #51412b); }
-.skin-ember .portrait-armor { background: linear-gradient(110deg, #a04e3a, #50302a); }
-.skin-azure .portrait-armor { background: linear-gradient(110deg, #4d7884, #2e414b); }
+.portrait-art { z-index: 1; height: 214px; width: auto; object-fit: contain; filter: drop-shadow(0 12px 8px #00000073); }
+.skin-ember .portrait-art { filter: sepia(.4) saturate(1.45) hue-rotate(-8deg) drop-shadow(0 12px 8px #00000073); }
+.skin-azure .portrait-art { filter: hue-rotate(168deg) saturate(.5) brightness(1.05) drop-shadow(0 12px 8px #00000073); }
 .portrait-level { position: absolute; bottom: 12px; color: #c9aa71; font-size: 8px; letter-spacing: 1px; }
 .hero-details { padding: 10px 4px; }
 .hero-details h2 { margin: 11px 0 4px; font: 500 25px Manrope, sans-serif; }
@@ -270,7 +285,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
   .mobile-nav button { min-width: 70px; display: grid; justify-items: center; gap: 3px; border: 0; background: none; color: #8e897e; font-size: 8px; cursor: pointer; }
   .mobile-nav button > span { font-size: 17px; }
   .mobile-nav button.active { color: var(--gold-bright); }
-  .forge-layout { grid-template-columns: 1fr; gap: 15px; }
+  .market-grid, .forge-layout { grid-template-columns: 1fr; gap: 15px; }
+  .market-card { min-height: 0; }
   .forge-aside { min-height: auto; padding: 17px; }
   .forge-aside h2 { margin: 11px 0 7px; font-size: 19px; }
   .forge-aside p { max-width: 290px; margin: 0; font-size: 9px; }
@@ -291,7 +307,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
   .skin-action { font-size: 6px; }
   .hero-card { grid-template-columns: 110px 1fr; gap: 14px; padding: 12px; }
   .hero-portrait { min-height: 200px; transform: scale(.96); }
-  .portrait-armor { width: 90px; }
+  .portrait-art { height: 188px; }
   .hero-details { padding: 7px 0; }
   .hero-details h2 { font-size: 17px; }
   .hero-details > p { font-size: 8px; }

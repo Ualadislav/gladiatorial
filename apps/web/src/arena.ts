@@ -1,5 +1,54 @@
 import Phaser from 'phaser';
 import type { PlayerProfile } from './types';
+import bodyUrl from '../../../prints/безруки.png';
+import armUrl from '../../../prints/рука справа.png';
+import swordUrl from '../../../prints/меч.png';
+import gladiatorSkeletonText from '../../../prints/gladiator_hit_animation/loongbones-web_ske.json?raw';
+
+type BoneAnimation = {
+  name: string;
+  rotateFrame: Array<{ duration: number; rotate: number }>;
+};
+
+type SkeletonData = {
+  armature: Array<{
+    animation: Array<{ name: string; duration: number; bone: BoneAnimation[] }>;
+  }>;
+};
+
+type HitAnimation = SkeletonData['armature'][number]['animation'][number];
+
+type FighterParts = {
+  body: Phaser.GameObjects.Container;
+  arm: Phaser.GameObjects.Container;
+  weapon: Phaser.GameObjects.Container;
+};
+
+const skeletonData = JSON.parse(gladiatorSkeletonText) as SkeletonData;
+const armature = skeletonData.armature[0];
+if (!armature) throw new Error('The gladiator armature is missing from its skeleton.');
+const hitAnimation: HitAnimation = armature.animation.find(({ name }) => name === 'newAnimation')
+  ?? (() => { throw new Error('The gladiator hit animation is missing from its skeleton.'); })();
+const bodySourceKey = 'gladiator-source-body';
+const armSourceKey = 'gladiator-source-arm';
+const swordSourceKey = 'gladiator-source-sword';
+const bodyKey = 'gladiator-body';
+const armKey = 'gladiator-arm';
+const swordKey = 'gladiator-sword';
+const spriteScale = 0.23;
+const armRestAngle = 0;
+const weaponRestAngle = 0;
+const armRaise = 341 * spriteScale / 5.7 * 1.5;
+
+function getBoneFrames(animation: HitAnimation, name: string): BoneAnimation['rotateFrame'] {
+  const bone = animation.bone.find((entry) => entry.name === name);
+  if (!bone?.rotateFrame.length) throw new Error(`The gladiator animation has no rotation frames for "${name}".`);
+  return bone.rotateFrame;
+}
+
+const armHitFrames = getBoneFrames(hitAnimation, 'bone');
+const weaponHitFrames = getBoneFrames(hitAnimation, 'bone1');
+const attackDuration = 440;
 
 type BattleResult = {
   won: boolean;
@@ -9,8 +58,12 @@ type BattleResult = {
 
 class ArenaScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Container;
-  private opponent!: Phaser.GameObjects.Container;
+  private playerArm!: Phaser.GameObjects.Container;
+  private playerWeapon!: Phaser.GameObjects.Container;
+  private opponentArm!: Phaser.GameObjects.Container;
+  private opponentWeapon!: Phaser.GameObjects.Container;
   private warning!: Phaser.GameObjects.Text;
+  private opponentAlert!: Phaser.GameObjects.Text;
   private playerHp = 100;
   private opponentHp = 110;
   private blockStartedAt = 0;
@@ -23,7 +76,14 @@ class ArenaScene extends Phaser.Scene {
     this.profile = profile;
   }
 
+  preload(): void {
+    this.load.image(bodySourceKey, bodyUrl);
+    this.load.image(armSourceKey, armUrl);
+    this.load.image(swordSourceKey, swordUrl);
+  }
+
   create(): void {
+    this.createSpriteFrames();
     const { width, height } = this.scale;
     const backdrop = this.add.graphics();
     backdrop.fillGradientStyle(0x28251f, 0x28251f, 0x11110f, 0x11110f, 1);
@@ -45,14 +105,23 @@ class ArenaScene extends Phaser.Scene {
       letterSpacing: 4,
     }).setOrigin(0.5);
 
-    this.player = this.makeFighter(
-      width * 0.29,
-      height * 0.62,
-      this.skinColor(this.profile.skin),
-      0x513b2d,
-      1,
-    );
-    this.opponent = this.makeFighter(width * 0.71, height * 0.62, 0xb05a40, 0x412c2a, -1);
+    const player = this.makeFighter(width * 0.39, height * 0.51, 1);
+    this.player = player.body;
+    this.playerArm = player.arm;
+    this.playerWeapon = player.weapon;
+    const opponent = this.makeFighter(width * 0.61, height * 0.51, -1);
+    this.opponentArm = opponent.arm;
+    this.opponentWeapon = opponent.weapon;
+    this.opponentAlert = this.add.text(width * 0.61, height * 0.51 - 112, '!', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '32px',
+      color: '#7b2019',
+      backgroundColor: '#fff4c7',
+      align: 'center',
+      stroke: '#7b2019',
+      strokeThickness: 3,
+      padding: { x: 13, y: 6 },
+    }).setOrigin(0.5).setAlpha(0).setAngle(-4);
     this.warning = this.add.text(width / 2, height * 0.28, '', {
       fontFamily: 'Arial, sans-serif',
       fontSize: '15px',
@@ -68,70 +137,42 @@ class ArenaScene extends Phaser.Scene {
     this.game.events.emit('arena:ready');
   }
 
-  private makeFighter(
-    x: number,
-    y: number,
-    armor: number,
-    helmet: number,
-    direction: number,
-  ): Phaser.GameObjects.Container {
-    const figure = this.add.graphics();
-    figure.fillStyle(0x10100f, 0.28);
-    figure.fillEllipse(0, 94, 130, 23);
-    figure.lineStyle(13, 0x30271f, 1);
-    figure.beginPath();
-    figure.moveTo(-20, 45);
-    figure.lineTo(-27, 86);
-    figure.moveTo(20, 45);
-    figure.lineTo(27, 86);
-    figure.strokePath();
-    figure.lineStyle(8, 0x9e7744, 1);
-    figure.beginPath();
-    figure.moveTo(-30, 86);
-    figure.lineTo(-13, 86);
-    figure.moveTo(20, 86);
-    figure.lineTo(39, 86);
-    figure.strokePath();
-    figure.fillStyle(armor, 1);
-    figure.fillRoundedRect(-36, -6, 72, 60, 16);
-    figure.fillStyle(0xc39c5c, 1);
-    figure.fillRect(-36, 34, 72, 7);
-    figure.fillStyle(0x221f1a, 1);
-    figure.fillRoundedRect(-8, -18, 16, 20, 5);
-    figure.fillStyle(0xc79268, 1);
-    figure.fillCircle(0, -39, 21);
-    figure.fillStyle(helmet, 1);
-    figure.fillRoundedRect(-24, -61, 48, 17, 7);
-    figure.fillRect(-21, -47, 42, 8);
-    figure.fillStyle(0x251d18, 1);
-    figure.fillRoundedRect(2, -40, 20, 5, 2);
-    figure.lineStyle(13, 0xc79268, 1);
-    figure.beginPath();
-    figure.moveTo(31, 4);
-    figure.lineTo(48, 28);
-    figure.strokePath();
-    figure.fillStyle(0xc69b59, 1);
-    figure.fillRoundedRect(41, 22, 14, 22, 4);
-    figure.lineStyle(5, 0xd5c39b, 1);
-    figure.beginPath();
-    figure.moveTo(49, 26);
-    figure.lineTo(82, 48);
-    figure.lineTo(98, 68);
-    figure.strokePath();
-    figure.fillStyle(0xe5ddd0, 0.85);
-    figure.fillTriangle(95, 65, 103, 70, 91, 73);
-    figure.fillStyle(0xc79268, 1);
-    figure.fillCircle(-43, 7, 9);
+  private createSpriteFrames(): void {
+    const frames = [
+      { source: bodySourceKey, name: bodyKey, x: 276, y: 76, width: 431, height: 853 },
+      { source: armSourceKey, name: armKey, x: 575, y: 268, width: 125, height: 341 },
+      { source: swordSourceKey, name: swordKey, x: 625, y: 441, width: 345, height: 177 },
+    ];
+    for (const frame of frames) {
+      const texture = this.textures.get(frame.source);
+      if (!texture.has(frame.name)) {
+        const created = texture.add(frame.name, 0, frame.x, frame.y, frame.width, frame.height);
+        if (!created) throw new Error(`Could not crop the "${frame.name}" gladiator sprite.`);
+      }
+    }
+  }
 
-    const fighter = this.add.container(x, y, [figure]);
-    fighter.setScale(direction, 1);
-    return fighter;
+  private makeFighter(x: number, y: number, direction: number): FighterParts {
+    const shadow = this.add.ellipse(0, 91, 134, 20, 0x080706, 0.35);
+    const bodySprite = this.add.image(0, 0, bodySourceKey, bodyKey).setOrigin(0.5).setScale(spriteScale);
+    if (direction === 1 && this.profile.skin !== 'bronze') {
+      bodySprite.setTint(this.skinColor(this.profile.skin));
+    }
+    const armSprite = this.add.image(0, 0, armSourceKey, armKey).setOrigin(0.5, 0.04).setScale(spriteScale);
+    const swordSprite = this.add.image(0, 0, swordSourceKey, swordKey).setOrigin(0.07, 0.91).setScale(spriteScale);
+    const weapon = this.add.container(0, 77, [swordSprite]).setAngle(weaponRestAngle);
+    const armX = 27 + (direction === 1 ? armRaise / 3 : 0);
+    const arm = this.add.container(armX, -31 - armRaise, [armSprite, weapon]).setAngle(armRestAngle);
+    const body = this.add.container(x, y, [shadow, bodySprite, arm]);
+    body.setScale(direction, 1);
+    if (direction !== 1) bodySprite.setTint(0xf3d4c3);
+    return { body, arm, weapon };
   }
 
   private skinColor(skin: PlayerProfile['skin']): number {
-    if (skin === 'ember') return 0x8e4939;
-    if (skin === 'azure') return 0x385d72;
-    return 0x947443;
+    if (skin === 'ember') return 0xffc7ba;
+    if (skin === 'azure') return 0xc3deff;
+    return 0xffffff;
   }
 
   private startBattle(): void {
@@ -139,6 +180,7 @@ class ArenaScene extends Phaser.Scene {
     this.opponentHp = 100 + this.profile.level * 10;
     this.running = true;
     this.warning.setAlpha(0);
+    this.opponentAlert.setAlpha(0);
     this.game.events.emit('arena:health', {
       player: this.playerHp,
       maxPlayer: this.playerHp,
@@ -150,21 +192,62 @@ class ArenaScene extends Phaser.Scene {
 
   private scheduleEnemyAttack(): void {
     if (!this.running) return;
-    this.warning.setText('ПРОТИВНИК ЗАМЫСЛИЛ УДАР').setColor('#f0a070');
-    this.tweens.add({ targets: this.warning, alpha: 1, duration: 180 });
+    this.opponentAlert.setAngle(-4).setScale(0.75).setAlpha(0);
+    this.tweens.add({
+      targets: this.opponentAlert,
+      alpha: 1,
+      scale: 1,
+      angle: 4,
+      duration: 180,
+      ease: 'Back.Out',
+      yoyo: true,
+      hold: 360,
+    });
     this.game.events.emit('arena:telegraph');
     this.time.delayedCall(720, () => {
       if (!this.running) return;
-      this.warning.setAlpha(0);
-      this.tweens.add({
-        targets: this.opponent,
-        x: this.opponent.x - 26,
-        duration: 130,
-        yoyo: true,
-        onYoyo: () => this.resolveEnemyHit(),
-      });
+      this.opponentAlert.setAlpha(0);
+      this.playHitAnimation(this.opponentArm, this.opponentWeapon, () => this.resolveEnemyHit());
       this.time.delayedCall(780, () => this.scheduleEnemyAttack());
     });
+  }
+
+  private playHitAnimation(
+    arm: Phaser.GameObjects.Container,
+    weapon: Phaser.GameObjects.Container,
+    onImpact: () => void,
+  ): void {
+    this.playRotationTrack(arm, armHitFrames, armRestAngle, 2, onImpact);
+    this.playRotationTrack(weapon, weaponHitFrames, weaponRestAngle);
+  }
+
+  private playRotationTrack(
+    target: Phaser.GameObjects.Container,
+    frames: BoneAnimation['rotateFrame'],
+    baseAngle: number,
+    impactFrame = -1,
+    onImpact?: () => void,
+  ): void {
+    target.setAngle(baseAngle + (frames[0]?.rotate ?? 0));
+    const millisecondsPerFrame = attackDuration / hitAnimation.duration;
+
+    const animateFrame = (index: number): void => {
+      const current = frames[index - 1];
+      const next = frames[index];
+      if (!current || !next) return;
+      this.tweens.add({
+        targets: target,
+        angle: baseAngle + next.rotate,
+        duration: current.duration * millisecondsPerFrame,
+        ease: 'Linear',
+        onComplete: () => {
+          if (index === impactFrame) onImpact?.();
+          if (index < frames.length - 1) animateFrame(index + 1);
+        },
+      });
+    };
+
+    animateFrame(1);
   }
 
   private resolveEnemyHit(): void {
@@ -192,21 +275,15 @@ class ArenaScene extends Phaser.Scene {
 
   private attack(): void {
     if (!this.running) return;
-    this.tweens.add({
-      targets: this.player,
-      x: this.player.x + 46,
-      duration: 115,
-      yoyo: true,
-      onYoyo: () => {
-        if (!this.running) return;
-        const damage = Math.round(
-          this.profile.strength * 0.7 + this.profile.weapon * 8 + Phaser.Math.Between(2, 7),
-        );
-        this.opponentHp = Math.max(0, this.opponentHp - damage);
-        this.game.events.emit('arena:damage', { side: 'opponent', amount: damage, critical: false });
-        this.emitHealth();
-        if (this.opponentHp <= 0) this.finishBattle(true);
-      },
+    this.playHitAnimation(this.playerArm, this.playerWeapon, () => {
+      if (!this.running) return;
+      const damage = Math.round(
+        this.profile.strength * 0.7 + this.profile.weapon * 8 + Phaser.Math.Between(2, 7),
+      );
+      this.opponentHp = Math.max(0, this.opponentHp - damage);
+      this.game.events.emit('arena:damage', { side: 'opponent', amount: damage, critical: false });
+      this.emitHealth();
+      if (this.opponentHp <= 0) this.finishBattle(true);
     });
   }
 
@@ -229,6 +306,7 @@ class ArenaScene extends Phaser.Scene {
 
   private finishBattle(won: boolean): void {
     this.running = false;
+    this.opponentAlert.setAlpha(0);
     this.warning.setText(won ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ')
       .setColor(won ? '#e5c27c' : '#dc8c75').setAlpha(1);
     this.game.events.emit('arena:finished', {
@@ -241,6 +319,7 @@ class ArenaScene extends Phaser.Scene {
   private stopBattle(): void {
     this.running = false;
     this.warning.setAlpha(0);
+    this.opponentAlert.setAlpha(0);
   }
 
 }
