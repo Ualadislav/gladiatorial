@@ -23,23 +23,21 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager "platforms;android-36" "build-tools;35.0.0" "platform-tools"
-          yes | sdkmanager --licenses || true
+        with:
+          packages: platforms;android-36 build-tools;36.0.0 platform-tools
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts=false
 
       - name: Build web + sync Capacitor
         run: npm run build:apk-assets
 
+      - name: Point Gradle at SDK
+        run: echo "sdk.dir=$ANDROID_HOME" > apps/web/android/local.properties
+
       - name: Assemble debug APK
         working-directory: apps/web/android
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

@@ -14,5 +14,6 @@ function run(command, args, env = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+run('npx', ['tsc', '-b']);
 run('npx', ['vite', 'build'], { VITE_BASE: './' });
 run('npx', ['cap', 'sync', 'android']);

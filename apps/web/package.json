@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b --pretty",
-    "build:apk-assets": "tsc -b && node ./scripts/build-apk-assets.mjs",
+    "build": "npx tsc -b && npx vite build",
+    "typecheck": "npx tsc -b --pretty",
+    "build:apk-assets": "node ./scripts/build-apk-assets.mjs",
     "open:android": "npx cap open android"
   },
   "dependencies": {
