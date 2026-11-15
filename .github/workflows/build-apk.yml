@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -39,9 +42,28 @@ jobs:
         working-directory: apps/web/android
         run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Pack APK for download
+        run: |
+          mkdir -p release
+          cp apps/web/android/app/build/outputs/apk/debug/app-debug.apk release/Gladiators-debug.apk
+          ls -lah release/
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gladiators-debug-apk
-          path: apps/web/android/app/build/outputs/apk/debug/*.apk
+          name: Gladiators-debug-apk
+          path: release/Gladiators-debug.apk
           if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Gladiators APK #${{ github.run_number }}
+          files: release/Gladiators-debug.apk
+          generate_release_notes: false
+          body: |
+            Debug APK для установки на Android.
+            Скачай `Gladiators-debug.apk` и установи на телефон.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,8 +10,8 @@
     <meta name="description" content="Выйди на арену. Чувствуй тайминг. Стань чемпионом." />
     <title>Гладиаторы — арена ждёт</title>
     <style>
-      /* Только портрет: в ландшафте просим повернуть телефон. */
-      @media screen and (orientation: landscape) and (max-height: 520px) {
+      /* Блок ландшафта только на телефонах, не на десктопе с низкой высотой окна. */
+      @media screen and (orientation: landscape) and (max-width: 900px) and (pointer: coarse) {
         html, body { overflow: hidden; }
         #app { display: none !important; }
         #rotate-lock {

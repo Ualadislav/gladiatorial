@@ -4,11 +4,15 @@ Telegram Mini App: короткие дуэли 1 на 1, блок/контра, 
 
 ## Android APK
 
-APK собирается на GitHub Actions (Capacitor):
+**Не качай** артефакт у **Deploy GitHub Pages** — там `artifact.tar` (это сайт, не APK).
 
-1. Repo → **Actions** → workflow **Build Android APK** → дождись зелёного прогона.
-2. Внизу артефакт **gladiators-debug-apk** → скачай ZIP → внутри `.apk`.
-3. На телефоне разреши установку из неизвестных источников и поставь APK.
+Нужно так:
+
+1. https://github.com/Ualadislav/gladiatorial/actions → только **Build Android APK** (зелёный).
+2. Внизу **Artifacts** → **Gladiators-debug-apk** → скачается ZIP.
+3. Внутри файл **`Gladiators-debug.apk`** — его и ставь на телефон.
+
+Ещё проще: вкладка **Releases** в репо — там же `Gladiators-debug.apk` после каждого успешного билда.
 
 Локально (нужны JDK 17+ и Android SDK):
 
