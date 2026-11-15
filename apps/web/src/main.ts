@@ -192,61 +192,60 @@ function render(): void {
   arenaGame?.destroy(true);
   arenaGame = undefined;
 
+  // Бой — отдельный полноэкранный портретный экран, без меню.
+  if (activeView === 'arena' && arenaMode === 'fight') {
+    app.innerHTML = `
+      <div class="fight-shell">
+        ${renderArenaFight(selectedOpponent())}
+        <div id="toast" class="toast" role="status"></div>
+      </div>`;
+    bindFightChrome();
+    mountArena();
+    return;
+  }
+
   app.innerHTML = `
-    <div class="game-shell">
+    <div class="game-shell menu-shell">
       <header class="topbar">
-        <a class="brand" href="#" aria-label="На арену">
+        <a class="brand" href="#" data-view="arena" aria-label="На арену">
           <span class="brand-mark">G</span>
           <span class="brand-name">GLADIATORS<small>ПУТЬ ЧЕМПИОНА</small></span>
         </a>
         <div class="topbar-right">
-          <span class="connection ${apiConnected ? 'online' : ''}"><i></i>${apiConnected ? 'СИНХРОНИЗИРОВАНО' : 'АВТОНОМНО'}</span>
           <span class="wallet"><span class="coin">✦</span><strong>${profile.gold}</strong></span>
           <span class="wallet boxes-wallet"><span class="coin">▣</span><strong>${profile.boxes}</strong></span>
-          <button class="avatar" data-view="hero" aria-label="Профиль">${profile.username.slice(0, 1).toUpperCase()}</button>
         </div>
       </header>
-      <main class="layout">
-        <aside class="sidebar">
-          <div class="sidebar-label">МЕНЮ</div>
-          <button class="nav-item ${activeView === 'arena' ? 'active' : ''}" data-view="arena"><span class="nav-icon">⚔</span> Арена <span class="nav-arrow">›</span></button>
-          <button class="nav-item ${activeView === 'forge' ? 'active' : ''}" data-view="forge"><span class="nav-icon">⌘</span> Арсенал</button>
-          <button class="nav-item ${activeView === 'hero' ? 'active' : ''}" data-view="hero"><span class="nav-icon">♙</span> Гладиатор</button>
-          <button class="nav-item ${activeView === 'market' ? 'active' : ''}" data-view="market"><span class="nav-icon">▣</span> Лавка</button>
-          <div class="side-card">
-            <div class="side-card-top"><span class="rank-emblem">Ⅰ</span><span>ТЕКУЩИЙ РАНГ</span></div>
-            <strong>Новичок</strong>
-            <div class="rank-progress"><i style="width:${Math.min(100, (profile.xp % 100))}%"></i></div>
-            <small>${profile.xp % 100} / 100 XP до уровня ${profile.level + 1}</small>
-          </div>
-          <div class="sidebar-footer">СОЗДАНО ДЛЯ АРЕНЫ<br><span>Сезон I · Пески славы</span></div>
-        </aside>
+      <main class="layout menu-layout">
         <section class="content">
-          ${activeView === 'arena' ? renderArena() : activeView === 'forge' ? renderForge() : activeView === 'hero' ? renderHero() : renderMarket()}
+          ${activeView === 'arena' ? renderArenaRoster() : activeView === 'forge' ? renderForge() : activeView === 'hero' ? renderHero() : renderMarket()}
         </section>
       </main>
-      <nav class="mobile-nav">
-        <button data-view="arena" class="${activeView === 'arena' ? 'active' : ''}"><span>⚔</span>Арена</button>
-        <button data-view="forge" class="${activeView === 'forge' ? 'active' : ''}"><span>⌘</span>Арсенал</button>
-        <button data-view="hero" class="${activeView === 'hero' ? 'active' : ''}"><span>♙</span>Герой</button>
-        <button data-view="market" class="${activeView === 'market' ? 'active' : ''}"><span>▣</span>Лавка</button>
+      <nav class="mobile-nav" aria-label="Главное меню">
+        <button type="button" data-view="arena" class="${activeView === 'arena' ? 'active' : ''}"><span>⚔</span>Арена</button>
+        <button type="button" data-view="forge" class="${activeView === 'forge' ? 'active' : ''}"><span>⌘</span>Арсенал</button>
+        <button type="button" data-view="hero" class="${activeView === 'hero' ? 'active' : ''}"><span>♙</span>Герой</button>
+        <button type="button" data-view="market" class="${activeView === 'market' ? 'active' : ''}"><span>▣</span>Лавка</button>
       </nav>
       <div id="toast" class="toast" role="status"></div>
     </div>`;
   bindNavigation();
-  if (activeView === 'arena' && arenaMode === 'roster') bindArenaRoster();
-  if (activeView === 'arena' && arenaMode === 'fight') mountArena();
+  if (activeView === 'arena') bindArenaRoster();
   if (activeView === 'forge') bindForge();
   if (activeView === 'hero') bindHero();
   if (activeView === 'market') bindMarket();
 }
 
-function selectedOpponent(): Opponent {
-  return getOpponent(selectedOpponentId) ?? OPPONENTS[0]!;
+function bindFightChrome(): void {
+  app.querySelector('[data-leave-arena]')?.addEventListener('click', () => {
+    arenaMode = 'roster';
+    battleStarted = false;
+    render();
+  });
 }
 
-function renderArena(): string {
-  return arenaMode === 'fight' ? renderArenaFight(selectedOpponent()) : renderArenaRoster();
+function selectedOpponent(): Opponent {
+  return getOpponent(selectedOpponentId) ?? OPPONENTS[0]!;
 }
 
 function renderArenaRoster(): string {
@@ -254,15 +253,30 @@ function renderArenaRoster(): string {
   const combat = opponentCombat(selected);
   const mechanics = opponentMechanics(selected);
   return `
-    <div class="page-heading">
-      <div><div class="eyebrow"><span class="eyebrow-line"></span> СЕЗОН I · ПЕСЧАНАЯ АРЕНА</div><h1>Выбери <em>соперника.</em></h1><p>От столва до глыбы Оро — каждый следующий удар тяжелее.</p></div>
-      <div class="rank-chip"><span>Ⅰ</span><div><small>ТВОЙ РАНГ</small><strong>Новичок</strong></div></div>
+    <div class="page-heading page-heading-compact">
+      <div><div class="eyebrow"><span class="eyebrow-line"></span> АРЕНА</div><h1>Выбери <em>врага</em></h1></div>
+      <div class="rank-chip"><span>Ⅰ</span><div><small>УР.</small><strong>${profile.level}</strong></div></div>
     </div>
-    <div class="roster-layout">
+    <div class="roster-vertical">
       <div class="opponent-list">
-        <div class="section-title"><span>СОПЕРНИКИ</span><i></i><small>АРЕНА I</small></div>
         ${OPPONENTS.map((opponent) => opponentCard(opponent)).join('')}
-        <div class="section-title mechanics-title"><span>МЕХАНИКИ БОЯ</span><i></i><small>КАК ЧИТАТЬ ДУЭЛЬ</small></div>
+      </div>
+      <aside class="roster-aside roster-aside-sticky">
+        <div class="eyebrow">${escapeHtml(combat.label.toUpperCase())}</div>
+        <h2>${escapeHtml(opponentDisplayName(selected))}</h2>
+        <p>${escapeHtml(selected.blurb)}</p>
+        <div class="roster-stats">
+          <div><small>${isTrainingDummy(selected) ? 'ПРОЧН.' : 'HP'}</small><strong>${selected.hp}</strong></div>
+          <div><small>УДАР</small><strong>${isTrainingDummy(selected) ? '—' : selected.damage}</strong></div>
+          <div><small>✦</small><strong>${selected.goldWin[0]}–${selected.goldWin[1]}</strong></div>
+        </div>
+        <div class="aside-mechanics aside-mechanics-compact">
+          ${mechanics.slice(0, 4).map((m) => `<div class="aside-mech"><strong>${escapeHtml(m.title)}</strong><span>${escapeHtml(m.blurb)}</span></div>`).join('')}
+        </div>
+        <button class="primary-button enter-arena-button" data-enter-arena ${selected.unlocked ? '' : 'disabled'}><span>В БОЙ</span><b>→</b></button>
+      </aside>
+      <details class="mechanics-fold">
+        <summary>Все механики боя</summary>
         <div class="mechanics-grid">
           ${COMBAT_MECHANICS.map((m) => `
             <article class="mechanic-card">
@@ -270,24 +284,8 @@ function renderArenaRoster(): string {
               <p>${escapeHtml(m.blurb)}</p>
             </article>`).join('')}
         </div>
-      </div>
-      <aside class="roster-aside">
-        <div class="eyebrow">ВЫБРАН · ${escapeHtml(combat.label.toUpperCase())}</div>
-        <h2>${escapeHtml(opponentDisplayName(selected))}</h2>
-        <p>${escapeHtml(selected.blurb)}</p>
-        <div class="roster-stats">
-          <div><small>${isTrainingDummy(selected) ? 'ПРОЧНОСТЬ' : 'ЗДОРОВЬЕ'}</small><strong>${selected.hp}</strong></div>
-          <div><small>УДАР</small><strong>${isTrainingDummy(selected) ? '—' : selected.damage}</strong></div>
-          <div><small>НАГРАДА</small><strong>✦ ${selected.goldWin[0]}–${selected.goldWin[1]}</strong></div>
-        </div>
-        <div class="aside-mechanics">
-          <div class="eyebrow">ЕГО ПРИЁМЫ</div>
-          ${mechanics.map((m) => `<div class="aside-mech"><strong>${escapeHtml(m.title)}</strong><span>${escapeHtml(m.blurb)}</span></div>`).join('')}
-        </div>
-        <button class="primary-button enter-arena-button" data-enter-arena ${selected.unlocked ? '' : 'disabled'}><span>ВЫХОД НА АРЕНУ</span><b>→</b></button>
-      </aside>
-    </div>
-    <div class="bottom-strip"><span>ТВОЙ ГЛАДИАТОР</span><strong>УР. ${profile.level}</strong><i></i><span>СИЛА ${profile.strength}</span><i></i><span>ОРУЖИЕ +${profile.weapon}</span><button data-view="forge">УЛУЧШИТЬ <b>↗</b></button></div>`;
+      </details>
+    </div>`;
 }
 
 function opponentCard(opponent: Opponent): string {
@@ -306,50 +304,44 @@ function opponentCard(opponent: Opponent): string {
 function renderArenaFight(opponent: Opponent): string {
   const training = isTrainingDummy(opponent);
   const combat = opponentCombat(opponent);
-  const mechanics = opponentMechanics(opponent);
-  const hint = training
-    ? (combat.ricochet
-      ? 'Рикошет: не бей слишком часто подряд — иначе стан. Копи серию к добиванию.'
-      : 'Столб молчит. Копи кровавую серию и жми добивание.')
-    : `${opponent.name} · ${combat.label}: финты, двойные и тяжёлые замахи. Контр = парирование.`;
-  const status = training ? `${opponent.name} стоит для ударов` : `${opponent.name} выходит на песок`;
+  const status = training ? `${opponent.name} ждёт ударов` : `${opponent.name} на арене`;
   return `
-    <div class="page-heading">
-      <div><div class="eyebrow"><span class="eyebrow-line"></span> СЕЗОН I · ПЕСЧАНАЯ АРЕНА</div><h1>Докажи, <em>кто достоин.</em></h1><p>Один на один. Только мастерство и верный момент.</p></div>
-      <div class="rank-chip"><span>Ⅰ</span><div><small>ТВОЙ РАНГ</small><strong>Новичок</strong></div></div>
-    </div>
-    <div class="arena-card">
-      <div class="arena-topline"><span class="fight-type"><i></i> ${escapeHtml(opponent.label)} · ${escapeHtml(combat.label.toUpperCase())}</span><span class="round-label">${escapeHtml(opponentDisplayName(opponent)).toUpperCase()}</span></div>
-      <div class="fighter-panels">
-        <div class="fighter-info player-info">
-          <div class="fighter-name">${escapeHtml(profile.username)}<span>УРОВЕНЬ ${profile.level}</span></div>
-          <div class="health-track"><i id="player-health" style="width:100%"></i></div>
-          <div class="health-caption"><span>ЗДОРОВЬЕ</span><b id="player-hp">${profile.vitality} / ${profile.vitality}</b></div>
-          <div class="resource-track shield-track"><i id="shield-bar" style="width:100%"></i></div>
-          <div class="health-caption"><span>ЩИТ</span><b id="shield-hp">100 / 100</b></div>
-        </div>
-        <div class="fighter-info enemy-info">
-          <div class="fighter-name">${escapeHtml(opponentDisplayName(opponent))}<span>${escapeHtml(opponent.label)}</span></div>
-          <div class="health-track enemy-track"><i id="enemy-health" style="width:100%"></i></div>
-          <div class="health-caption"><span>${training ? 'ПРОЧНОСТЬ' : 'ЗДОРОВЬЕ'}</span><b id="enemy-hp">${opponent.hp} / ${opponent.hp}</b></div>
-          <div class="resource-track blood-track"><i id="blood-bar" style="width:0%"></i></div>
-          <div class="health-caption"><span>СЕРИЯ</span><b id="blood-hits">0 / 3</b></div>
-        </div>
+    <header class="fight-top">
+      <button type="button" class="fight-back" data-leave-arena aria-label="К списку">←</button>
+      <div class="fight-title">
+        <small>${escapeHtml(opponent.label)} · ${escapeHtml(combat.label)}</small>
+        <strong>${escapeHtml(opponentDisplayName(opponent))}</strong>
       </div>
+      <div class="fight-gold">✦ ${profile.gold}</div>
+    </header>
+    <div class="fight-hud">
+      <div class="fighter-info player-info">
+        <div class="fighter-name">${escapeHtml(profile.username)}<span>УР. ${profile.level}</span></div>
+        <div class="health-track"><i id="player-health" style="width:100%"></i></div>
+        <div class="health-caption"><span>HP</span><b id="player-hp">${profile.vitality}</b></div>
+        <div class="resource-track shield-track"><i id="shield-bar" style="width:100%"></i></div>
+        <div class="health-caption"><span>ЩИТ</span><b id="shield-hp">100</b></div>
+      </div>
+      <div class="fighter-info enemy-info">
+        <div class="fighter-name">${escapeHtml(opponent.name)}<span>${training ? 'СТОЛБ' : 'ВРАГ'}</span></div>
+        <div class="health-track enemy-track"><i id="enemy-health" style="width:100%"></i></div>
+        <div class="health-caption"><span>${training ? 'ПРОЧН.' : 'HP'}</span><b id="enemy-hp">${opponent.hp}</b></div>
+        <div class="resource-track blood-track"><i id="blood-bar" style="width:0%"></i></div>
+        <div class="health-caption"><span>СЕРИЯ</span><b id="blood-hits">0/3</b></div>
+      </div>
+    </div>
+    <div class="fight-stage">
       <div id="arena-canvas" class="arena-canvas"></div>
       <div id="floating-damage" class="floating-damage" aria-live="polite"></div>
-      <div class="arena-caption"><span class="caption-dot"></span><span id="battle-status">${escapeHtml(status)}</span><span class="arena-caption-right">АРЕНА I</span></div>
-      <div class="controls controls-with-finish">
-        <button id="block-button" class="action-button block-button" aria-label="Блокировать удар"><span class="button-glyph">◈</span><span>БЛОК</span><small>Щит по замаху</small></button>
-        <button id="attack-button" class="action-button attack-button" aria-label="Лёгкая атака"><span class="button-glyph">⚔</span><span>АТАКА</span><small>Быстрый удар</small></button>
-        <button id="counter-button" class="action-button counter-button" aria-label="Парирование"><span class="button-glyph">↯</span><span>КОНТР</span><small>Парирование</small></button>
-        <button id="hard-attack-button" class="action-button hard-attack-button" aria-label="Тяжёлый удар"><span class="button-glyph">⛏</span><span>ВЫПАД</span><small>Тяжёлый удар</small></button>
-        <button id="finish-button" class="action-button finish-button" aria-label="Добивание" disabled><span class="button-glyph">☠</span><span>ДОБИТЬ</span><small>Кровавая серия</small></button>
-      </div>
-      <div class="arena-hint"><span>✦</span> ${escapeHtml(hint)}</div>
-      <div class="fight-mechanics">${mechanics.map((m) => `<span title="${escapeHtml(m.blurb)}">${escapeHtml(m.title)}</span>`).join('')}</div>
     </div>
-    <div class="bottom-strip"><span>ТВОЙ ГЛАДИАТОР</span><strong>УР. ${profile.level}</strong><i></i><span>СИЛА ${profile.strength}</span><i></i><span>ОРУЖИЕ +${profile.weapon}</span><button type="button" data-leave-arena>К СПИСКУ <b>↗</b></button></div>`;
+    <div class="arena-caption fight-status"><span class="caption-dot"></span><span id="battle-status">${escapeHtml(status)}</span></div>
+    <div class="controls controls-with-finish fight-controls">
+      <button id="block-button" class="action-button block-button" type="button" aria-label="Блок"><span class="button-glyph">◈</span><span>БЛОК</span><small>Щит</small></button>
+      <button id="attack-button" class="action-button attack-button" type="button" aria-label="Атака"><span class="button-glyph">⚔</span><span>АТАКА</span><small>Удар</small></button>
+      <button id="counter-button" class="action-button counter-button" type="button" aria-label="Контр"><span class="button-glyph">↯</span><span>КОНТР</span><small>Парир.</small></button>
+      <button id="hard-attack-button" class="action-button hard-attack-button" type="button" aria-label="Выпад"><span class="button-glyph">⛏</span><span>ВЫПАД</span><small>Сильный</small></button>
+      <button id="finish-button" class="action-button finish-button" type="button" aria-label="Добивание" disabled><span class="button-glyph">☠</span><span>ДОБИТЬ</span><small>Серия</small></button>
+    </div>`;
 }
 
 function bindArenaRoster(): void {
@@ -583,8 +575,8 @@ function guard(event: PointerEvent, eventName: string, lockMs: number, buttonSel
 function onArenaEvent(event: string, value?: unknown): void {
   if (event === 'arena:health' && value && typeof value === 'object') {
     const health = value as { player: number; maxPlayer: number; opponent: number; maxOpponent: number };
-    setText('#player-hp', `${health.player} / ${health.maxPlayer}`);
-    setText('#enemy-hp', `${health.opponent} / ${health.maxOpponent}`);
+    setText('#player-hp', String(health.player));
+    setText('#enemy-hp', String(health.opponent));
     setWidth('#player-health', health.player / health.maxPlayer);
     setWidth('#enemy-health', health.opponent / health.maxOpponent);
     document.querySelector('#player-health')?.classList.toggle('low', health.player / health.maxPlayer < 0.3);
@@ -623,9 +615,9 @@ function onArenaEvent(event: string, value?: unknown): void {
       bloodNeed: number;
       finishReady: boolean;
     };
-    setText('#shield-hp', `${hud.shield} / ${hud.shieldMax}`);
+    setText('#shield-hp', String(hud.shield));
     setWidth('#shield-bar', hud.shield / hud.shieldMax);
-    setText('#blood-hits', `${hud.blood} / ${hud.bloodNeed}`);
+    setText('#blood-hits', `${hud.blood}/${hud.bloodNeed}`);
     setWidth('#blood-bar', hud.blood / hud.bloodNeed);
     const finish = app.querySelector<HTMLButtonElement>('#finish-button');
     if (finish) {

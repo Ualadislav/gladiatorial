@@ -830,11 +830,12 @@ export function createArena(
   opponent: Opponent,
   onEvent: (event: string, value?: unknown) => void,
 ): Phaser.Game {
+  // Портретный холст (телефон): бойцы бок о бок, кнопки — в HTML снизу.
   const game = new Phaser.Game({
     type: Phaser.CANVAS,
     parent: mount,
-    width: 920,
-    height: 360,
+    width: 390,
+    height: 340,
     backgroundColor: '#171512',
     render: {
       antialias: true,
