@@ -4,3 +4,14 @@ node_modules/
 *.tsbuildinfo
 .env
 .DS_Store
+
+# Android / Capacitor local build
+apps/web/android/.gradle/
+apps/web/android/**/build/
+apps/web/android/local.properties
+apps/web/android/captures/
+apps/web/android/.idea/
+*.apk
+*.aab
+*.keystore
+!apps/web/android/gradle/wrapper/**

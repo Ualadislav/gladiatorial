@@ -10,7 +10,8 @@
     "dev": "npm run dev -w @gladiators/web",
     "dev:server": "npm run dev -w @gladiators/server",
     "build": "npm run build -w @gladiators/web && npm run build -w @gladiators/server",
-    "typecheck": "npm run typecheck -w @gladiators/web && npm run typecheck -w @gladiators/server"
+    "typecheck": "npm run typecheck -w @gladiators/web && npm run typecheck -w @gladiators/server",
+    "build:apk-assets": "npm run build:apk-assets -w @gladiators/web"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
