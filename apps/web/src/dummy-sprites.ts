@@ -16,12 +16,12 @@ export const DUMMY_SPRITES: Record<DummySpriteId, DummySprite> = {
     id: 'wood',
     textureKey: 'dummy-wood',
     url: woodUrl,
-    displayHeight: 236,
+    displayHeight: 159,
   },
   metal: {
     id: 'metal',
     textureKey: 'dummy-metal',
     url: metalUrl,
-    displayHeight: 236,
+    displayHeight: 159,
   },
 };

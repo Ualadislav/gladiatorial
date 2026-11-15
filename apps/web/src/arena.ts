@@ -38,6 +38,7 @@ import {
   createGladiatorArmature,
   GLADIATOR_PART_URLS,
   gladiatorPartKey,
+  gladiatorRigScale,
   lowHitDurationMs,
   interruptArmature,
   playBlock,
@@ -62,8 +63,21 @@ type FighterParts = {
 };
 
 const arenaBackgroundKey = 'arena-background';
-const playerSlot = 0.4;
-const opponentSlot = 0.6;
+/** Чуть шире 0.37/0.63, но не так широко как 0.34/0.66. */
+const playerSlot = 0.355;
+const opponentSlot = 0.645;
+
+/** Камень кольца на фоне 1280×720: верхняя и нижняя дуга кирпичей. */
+const BG_RING_TOP = 260;
+const BG_RING_BOT = 660;
+const BG_NATIVE_H = 720;
+/** Сдвиг ног вниз по экрану (к нижней дуге кольца). */
+const GROUND_NUDGE_PX = 36;
+
+/** Игрок всегда выше врага в простое; на своём ударе — ещё выше до конца анимации. */
+const DEPTH_IDLE_PLAYER = 4;
+const DEPTH_IDLE_OPPONENT = 2;
+const DEPTH_ATTACK = 6;
 
 type BattleResult = {
   won: boolean;
@@ -76,8 +90,10 @@ class ArenaScene extends Phaser.Scene {
   private playerFighter!: FighterParts;
   private opponentFigure!: Phaser.GameObjects.Container;
   private opponentFighter!: FighterParts;
-  private warning!: Phaser.GameObjects.Text;
-  private opponentAlert!: Phaser.GameObjects.Text;
+  private telegraphWaves: Phaser.GameObjects.Graphics[] = [];
+  private calloutRoot?: Phaser.GameObjects.Container;
+  private calloutHide?: Phaser.Time.TimerEvent;
+  private resultBanner?: Phaser.GameObjects.Container;
   private playerHp = 100;
   private opponentHp = 80;
   private maxOpponentHp = 80;
@@ -129,43 +145,15 @@ class ArenaScene extends Phaser.Scene {
 
   create(): void {
     const { width, height } = this.scale;
-    this.drawArenaBackground(width, height);
+    const ground = this.drawArenaBackground(width, height);
 
-    this.add.text(width / 2, 18, 'ПЕСОК • ЖАЖДА • СЛАВА', {
-      fontFamily: 'Arial, sans-serif',
-      fontSize: '11px',
-      color: '#fff4d8',
-      letterSpacing: 4,
-      stroke: '#2a1c0d',
-      strokeThickness: 3,
-    }).setOrigin(0.5);
-
-    const ground = height * 0.96;
     this.playerFighter = this.makeFighter(width * playerSlot, ground, 1);
     this.player = this.playerFighter.body;
     this.opponentFighter = isTrainingDummy(this.opponent)
       ? this.makeTrainingDummy(width * opponentSlot, ground)
       : this.makeOpponent(width * opponentSlot, ground);
     this.opponentFigure = this.opponentFighter.body;
-    this.breathe(this.player);
-    if (this.opponentFighter.armature) this.breathe(this.opponentFigure);
-    this.opponentAlert = this.add.text(width * opponentSlot, ground - 210, '!', {
-      fontFamily: 'Arial Black, Arial, sans-serif',
-      fontSize: '32px',
-      color: '#7b2019',
-      backgroundColor: '#fff4c7',
-      align: 'center',
-      stroke: '#7b2019',
-      strokeThickness: 3,
-      padding: { x: 13, y: 6 },
-    }).setOrigin(0.5).setAlpha(0).setAngle(-4);
-    this.warning = this.add.text(width / 2, height * 0.28, '', {
-      fontFamily: 'Arial, sans-serif',
-      fontSize: '15px',
-      color: '#f0a070',
-      fontStyle: 'bold',
-      letterSpacing: 2,
-    }).setOrigin(0.5).setAlpha(0);
+    this.setFighterDepths('idle');
 
     this.events.on('battle:start', this.startBattle, this);
     this.events.on('battle:attack', this.attack, this);
@@ -177,15 +165,36 @@ class ArenaScene extends Phaser.Scene {
     this.game.events.emit('arena:ready');
   }
 
-  private drawArenaBackground(width: number, height: number): void {
-    const background = this.add.image(width / 2, height * 0.58, arenaBackgroundKey).setOrigin(0.5);
-    const cover = Math.max(width / background.width, height / background.height) * 1.08;
+  /** Фон как раньше (низ к рамке). Возвращает Y середины кольца на этом фоне. */
+  private drawArenaBackground(width: number, height: number): number {
+    const background = this.add.image(width / 2, height, arenaBackgroundKey).setOrigin(0.5, 1);
+    const cover = Math.max(width / background.width, height / background.height) * 1.14;
     background.setScale(cover).setDepth(-2);
     const shade = this.add.graphics().setDepth(-1);
-    shade.fillStyle(0x17120c, 0.18);
+    shade.fillStyle(0x17120c, 0.16);
     shade.fillRect(0, 0, width, height);
-    shade.fillStyle(0x000000, 0.12);
-    shade.fillRect(0, 0, width, height * 0.22);
+    shade.fillStyle(0x000000, 0.1);
+    shade.fillRect(0, 0, width, height * 0.18);
+    const ringMid = (BG_RING_TOP + BG_RING_BOT) / 2;
+    return height - (BG_NATIVE_H - ringMid) * cover + GROUND_NUDGE_PX;
+  }
+
+  private setFighterDepths(mode: 'idle' | 'player-attack' | 'enemy-attack'): void {
+    if (mode === 'player-attack') {
+      this.opponentFigure.setDepth(DEPTH_IDLE_OPPONENT);
+      this.player.setDepth(DEPTH_ATTACK);
+      this.children.bringToTop(this.player);
+      return;
+    }
+    if (mode === 'enemy-attack') {
+      this.player.setDepth(DEPTH_IDLE_PLAYER);
+      this.opponentFigure.setDepth(DEPTH_ATTACK);
+      this.children.bringToTop(this.opponentFigure);
+      return;
+    }
+    this.opponentFigure.setDepth(DEPTH_IDLE_OPPONENT);
+    this.player.setDepth(DEPTH_IDLE_PLAYER);
+    this.children.bringToTop(this.player);
   }
 
   private makeFighter(
@@ -208,9 +217,6 @@ class ArenaScene extends Phaser.Scene {
       tint,
       withShield: options.withShield ?? (direction === 1 ? 'heater' : false),
     });
-    const shadowW = 200 * (options.scaleMul ?? 1);
-    const shadow = this.add.ellipse(0, 4, shadowW, 28, 0x080706, 0.38);
-    armature.root.addAt(shadow, 0);
     return {
       body: armature.root,
       armature,
@@ -243,25 +249,11 @@ class ArenaScene extends Phaser.Scene {
       dummy.displayHeight,
     );
     sprite.setFlipX(true);
-    const shadow = this.add.ellipse(0, 4, 112, 24, 0x080706, 0.34);
-    const stub = this.add.container(0, -120);
-    const body = this.add.container(x, y, [shadow, sprite, stub]);
+    const stub = this.add.container(0, -96);
+    const body = this.add.container(x, y, [sprite, stub]);
     body.setData('homeX', x);
     body.setData('homeY', y);
     return { body, armature: null, arm: stub, weapon: stub, direction: -1 };
-  }
-
-  private breathe(figure: Phaser.GameObjects.Container): void {
-    const home = figure.getData('homeY') as number;
-    figure.setY(home);
-    this.tweens.add({
-      targets: figure,
-      y: home - 2,
-      duration: 920,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.InOut',
-    });
   }
 
   private skinColor(skin: PlayerProfile['skin']): number {
@@ -289,8 +281,9 @@ class ArenaScene extends Phaser.Scene {
     this.playerStunnedUntil = 0;
     this.sandSlowUntil = 0;
     this.running = true;
-    this.warning.setAlpha(0);
-    this.opponentAlert.setAlpha(0);
+    this.clearCallout();
+    this.clearResultBanner();
+    this.clearTelegraphWaves();
     this.emitHealth();
     this.emitCombatHud();
     if (!isTrainingDummy(this.opponent)) this.scheduleEnemyAttack();
@@ -306,17 +299,85 @@ class ArenaScene extends Phaser.Scene {
     return timer;
   }
 
-  private flashAlert(hold = 320): void {
-    this.opponentAlert.setAngle(-4).setScale(0.75).setAlpha(0);
+  private clearTelegraphWaves(): void {
+    for (const wave of this.telegraphWaves) {
+      const state = wave.getData('waveState') as { t: number } | undefined;
+      if (state) this.tweens.killTweensOf(state);
+      this.tweens.killTweensOf(wave);
+      wave.destroy();
+    }
+    this.telegraphWaves = [];
+  }
+
+  /** Мировая точка плеч бойца (или оценка для столба). */
+  private fighterShoulderPoint(fighter: FighterParts): { x: number; y: number } {
+    const arm = fighter.armature;
+    if (arm) {
+      const left = arm.bones.get('лево_плечо');
+      const right = arm.bones.get('право_плечо');
+      if (left && right) {
+        const a = left.getWorldTransformMatrix();
+        const b = right.getWorldTransformMatrix();
+        return { x: (a.tx + b.tx) / 2, y: (a.ty + b.ty) / 2 };
+      }
+      if (left) {
+        const a = left.getWorldTransformMatrix();
+        return { x: a.tx, y: a.ty };
+      }
+    }
+    const s = Math.abs(fighter.body.scaleY) || gladiatorRigScale;
+    return {
+      x: fighter.body.x,
+      y: fighter.body.y - 820 * s,
+    };
+  }
+
+  private opponentShoulderPoint(): { x: number; y: number } {
+    return this.fighterShoulderPoint(this.opponentFighter);
+  }
+
+  /**
+   * Три красные волны от плеч врага весь телеграф.
+   * За персонажами; только боковые дуги — корпус не перекрывают.
+   */
+  private flashAlert(durationMs = 700): void {
+    this.clearTelegraphWaves();
+    const g = this.add.graphics().setDepth(1);
+    const state = { t: 0 };
+    g.setData('waveState', state);
+    this.telegraphWaves.push(g);
+
+    const cycleMs = 420;
+    const waveAlpha = 0.4;
+
     this.tweens.add({
-      targets: this.opponentAlert,
-      alpha: 1,
-      scale: 1,
-      angle: 4,
-      duration: 180,
-      ease: 'Back.Out',
-      yoyo: true,
-      hold,
+      targets: state,
+      t: 1,
+      duration: Math.max(180, durationMs),
+      ease: 'Linear',
+      onUpdate: () => {
+        if (!g.active) return;
+        const shoulder = this.opponentShoulderPoint();
+        g.setPosition(shoulder.x, shoulder.y);
+        g.clear();
+        const elapsed = state.t * Math.max(180, durationMs);
+        for (let i = 0; i < 3; i += 1) {
+          const phase = ((elapsed / cycleMs) + i / 3) % 1;
+          const r = 16 + phase * 28;
+          const a = waveAlpha * (1 - phase * 0.7);
+          g.lineStyle(3.2, 0xff2a2a, a);
+          // Боковые дуги в стороны от плеч (не через торс).
+          g.beginPath();
+          g.arc(0, 0, r, Phaser.Math.DegToRad(-50), Phaser.Math.DegToRad(50), false);
+          g.strokePath();
+          g.beginPath();
+          g.arc(0, 0, r, Phaser.Math.DegToRad(130), Phaser.Math.DegToRad(230), false);
+          g.strokePath();
+        }
+      },
+      onComplete: () => {
+        this.clearTelegraphWaves();
+      },
     });
   }
 
@@ -344,12 +405,12 @@ class ArenaScene extends Phaser.Scene {
     const cooldown = this.opponent.cooldownMs
       ?? Math.max(860, lowHitDurationMs * 0.55);
 
-    this.flashAlert(pattern === 'heavy' ? 480 : 320);
+    this.flashAlert(telegraph);
     this.game.events.emit('arena:telegraph', { pattern });
 
     this.trackEnemyTimer(this.time.delayedCall(telegraph, () => {
       if (!this.running || epoch !== this.enemyAttackEpoch) return;
-      this.opponentAlert.setAlpha(0);
+      this.clearTelegraphWaves();
 
       if (pattern === 'feint') {
         this.resolveFeint(epoch);
@@ -369,7 +430,7 @@ class ArenaScene extends Phaser.Scene {
       if (pattern === 'double') {
         this.trackEnemyTimer(this.time.delayedCall(340, () => {
           if (!this.running || epoch !== this.enemyAttackEpoch) return;
-          this.flashAlert(180);
+          this.flashAlert(280);
           this.playEnemySwing('normal', epoch, () => {
             if (epoch !== this.enemyAttackEpoch) return;
             this.resolveEnemyHit(DOUBLE_SECOND_FACTOR, 'double');
@@ -395,11 +456,19 @@ class ArenaScene extends Phaser.Scene {
   ): void {
     if (!this.opponentFighter.armature) return;
     const play = pattern === 'heavy' ? playHardHit : playLowHit;
-    play(this, this.opponentFighter.armature, () => {
-      if (epoch !== this.enemyAttackEpoch) return;
-      this.slashEffect(this.opponentFighter);
-      onImpact();
-    });
+    this.setFighterDepths('enemy-attack');
+    play(
+      this,
+      this.opponentFighter.armature,
+      () => {
+        if (epoch !== this.enemyAttackEpoch) return;
+        this.slashEffect(this.opponentFighter);
+        onImpact();
+      },
+      () => {
+        if (epoch === this.enemyAttackEpoch) this.setFighterDepths('idle');
+      },
+    );
   }
 
   private resolveFeint(epoch: number): void {
@@ -421,8 +490,8 @@ class ArenaScene extends Phaser.Scene {
   private interruptEnemyOffense(): void {
     this.enemyAttackEpoch += 1;
     this.clearEnemyTimers();
-    this.tweens.killTweensOf(this.opponentAlert);
-    this.opponentAlert.setAlpha(0);
+    this.clearTelegraphWaves();
+    this.setFighterDepths('idle');
     if (this.opponentFighter.armature) {
       interruptArmature(this, this.opponentFighter.armature);
     }
@@ -446,7 +515,6 @@ class ArenaScene extends Phaser.Scene {
       repeat: 3,
       onComplete: () => {
         this.opponentFigure.setAngle(0);
-        if (home !== undefined && this.opponentFighter.armature) this.breathe(this.opponentFigure);
       },
     });
   }
@@ -463,7 +531,6 @@ class ArenaScene extends Phaser.Scene {
       ease: 'Cubic.Out',
       onComplete: () => {
         this.opponentFigure.setX(homeX);
-        if (this.opponentFighter.armature) this.breathe(this.opponentFigure);
       },
     });
     this.knockbackBonusUntil = this.time.now + KNOCKBACK_BONUS_MS;
@@ -494,16 +561,66 @@ class ArenaScene extends Phaser.Scene {
     this.sandSlowUntil = this.time.now + 700;
   }
 
+  /** Точка скрещения клинков / удара о щит — между бойцами на высоте оружия. */
+  private clashPoint(): { x: number; y: number } {
+    const s = Math.abs(this.player.scaleY) || gladiatorRigScale;
+    return {
+      x: (this.player.x + this.opponentFigure.x) / 2,
+      y: Math.min(this.player.y, this.opponentFigure.y) - 520 * s,
+    };
+  }
+
+  /** Искры при скрещении оружия или ударе о щит. */
+  private spawnSparks(at?: { x: number; y: number }, count = 18): void {
+    const p = at ?? this.clashPoint();
+    const flash = this.add.circle(p.x, p.y, 12, 0xffe000, 0.95).setDepth(50);
+    this.tweens.add({
+      targets: flash,
+      scale: 2.4,
+      alpha: 0,
+      duration: 180,
+      ease: 'Cubic.Out',
+      onComplete: () => flash.destroy(),
+    });
+
+    const colors = [0xffe000, 0xfff200, 0xffd400, 0xffc107, 0xfff6a0, 0xffffff];
+    for (let i = 0; i < count; i += 1) {
+      const ang = (Math.PI * 2 * i) / count + Phaser.Math.FloatBetween(-0.2, 0.2);
+      const dist = Phaser.Math.Between(22, 58);
+      const g = this.add.graphics().setDepth(50).setPosition(p.x, p.y);
+      const color = colors[i % colors.length]!;
+      const len = Phaser.Math.Between(8, 16);
+      g.lineStyle(2.5, color, 1);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(ang) * len, Math.sin(ang) * len);
+      g.strokePath();
+      g.fillStyle(color, 1);
+      g.fillCircle(Math.cos(ang) * len, Math.sin(ang) * len, 2.2);
+
+      this.tweens.add({
+        targets: g,
+        x: p.x + Math.cos(ang) * dist,
+        y: p.y + Math.sin(ang) * dist - Phaser.Math.Between(8, 28),
+        alpha: 0,
+        scale: 0.4,
+        duration: Phaser.Math.Between(280, 480),
+        ease: 'Cubic.Out',
+        onComplete: () => g.destroy(),
+      });
+    }
+  }
+
   private slashEffect(source: FighterParts): void {
     const dir = source.direction;
-    const centerX = source.body.x + dir * 76;
-    const centerY = source.body.y - 104;
+    const centerX = source.body.x + dir * 50;
+    const centerY = source.body.y - 69;
     const sweep = (from: number, to: number): [number, number, boolean] => (
       dir === 1 ? [from, to, false] : [180 - from, 180 - to, true]
     );
     const [start, end, anticlockwise] = sweep(-86, 34);
     const slash = this.add.graphics({ x: centerX, y: centerY }).setDepth(6);
-    for (const [radius, width, alpha, color] of [[50, 8, 0.28, 0xfff2cf], [46, 4, 0.95, 0xffffff]] as const) {
+    for (const [radius, width, alpha, color] of [[33, 6, 0.28, 0xfff2cf], [30, 3, 0.95, 0xffffff]] as const) {
       slash.lineStyle(width, color, alpha);
       slash.beginPath();
       slash.arc(0, 0, radius, Phaser.Math.DegToRad(start), Phaser.Math.DegToRad(end), anticlockwise);
@@ -530,9 +647,93 @@ class ArenaScene extends Phaser.Scene {
     this.emitCombatHud();
   }
 
-  private flashWarning(text: string, color: string): void {
-    this.warning.setText(text).setColor(color).setAlpha(1);
-    this.time.delayedCall(520, () => this.warning.setAlpha(0));
+  private clearCallout(): void {
+    this.calloutHide?.remove(false);
+    this.calloutHide = undefined;
+    this.calloutRoot?.destroy(true);
+    this.calloutRoot = undefined;
+  }
+
+  private clearResultBanner(): void {
+    this.resultBanner?.destroy(true);
+    this.resultBanner = undefined;
+  }
+
+  /**
+   * Диалог: у врага — справа; у игрока — за спиной (слева).
+   * Прозрачность 40%.
+   */
+  private flashWarning(text: string, color: string, side: 'player' | 'enemy' = 'enemy'): void {
+    this.clearCallout();
+    const fromPlayer = side === 'player';
+    const shoulder = this.fighterShoulderPoint(fromPlayer ? this.playerFighter : this.opponentFighter);
+    const label = this.add.text(0, 0, text, {
+      fontFamily: 'Arial, sans-serif',
+      fontSize: '11px',
+      color,
+      fontStyle: 'bold',
+    }).setOrigin(fromPlayer ? 1 : 0, 0.5);
+
+    const padX = 9;
+    const padY = 6;
+    const w = label.width + padX * 2;
+    const h = Math.max(22, label.height + padY * 2);
+    const border = Number.parseInt(color.replace('#', ''), 16);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x16110e, 0.92);
+    bg.lineStyle(1.5, Number.isFinite(border) ? border : 0xe0c080, 1);
+    if (fromPlayer) {
+      bg.fillRoundedRect(-w, -h / 2, w, h, 5);
+      bg.strokeRoundedRect(-w, -h / 2, w, h, 5);
+      bg.fillTriangle(7, -5, -1, 0, 7, 5);
+      label.setPosition(-padX, 0);
+    } else {
+      bg.fillRoundedRect(0, -h / 2, w, h, 5);
+      bg.strokeRoundedRect(0, -h / 2, w, h, 5);
+      bg.fillTriangle(-7, -5, 1, 0, -7, 5);
+      label.setPosition(padX, 0);
+    }
+
+    const root = this.add.container(
+      shoulder.x + (fromPlayer ? -42 : 42),
+      shoulder.y - 6,
+      [bg, label],
+    );
+    root.setDepth(12);
+    root.setAlpha(0.6);
+    this.calloutRoot = root;
+    this.calloutHide = this.time.delayedCall(1100, () => this.clearCallout());
+  }
+
+  /** Крупный итог боя поверх персонажей, в рамке. */
+  private showResultBanner(text: string, won: boolean): void {
+    this.clearResultBanner();
+    this.clearCallout();
+    const { width, height } = this.scale;
+    const fill = won ? 0xe5c27c : 0xff5a4a;
+    const label = this.add.text(0, 0, text, {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '26px',
+      color: won ? '#f3e0a8' : '#ffe0dc',
+      fontStyle: 'bold',
+      letterSpacing: 4,
+    }).setOrigin(0.5);
+
+    const padX = 26;
+    const padY = 16;
+    const w = Math.max(220, label.width + padX * 2);
+    const h = label.height + padY * 2;
+    const frame = this.add.graphics();
+    frame.fillStyle(0x100c0a, 0.94);
+    frame.fillRoundedRect(-w / 2, -h / 2, w, h, 8);
+    frame.lineStyle(3, fill, 1);
+    frame.strokeRoundedRect(-w / 2, -h / 2, w, h, 8);
+    frame.lineStyle(1.5, 0xffffff, 0.28);
+    frame.strokeRoundedRect(-w / 2 + 5, -h / 2 + 5, w - 10, h - 10, 5);
+
+    const banner = this.add.container(width / 2, height * 0.2, [frame, label]);
+    banner.setDepth(40);
+    this.resultBanner = banner;
   }
 
   private resolveEnemyHit(damageMul = 1, pattern: AttackPattern = 'normal'): void {
@@ -551,7 +752,8 @@ class ArenaScene extends Phaser.Scene {
       this.bloodHits = 0;
       this.finishReady = false;
       this.playerHp = Math.max(0, this.playerHp - damage);
-      this.flashWarning('КЛИНЧ', '#e0c080');
+      this.spawnSparks(undefined, 20);
+      this.flashWarning('КЛИНЧ', '#e0c080', 'player');
       this.game.events.emit('arena:damage', { side: 'player', amount: damage, critical: false });
       this.game.events.emit('arena:damage', { side: 'opponent', amount: clinchBack, critical: false });
       this.game.events.emit('arena:status', 'Клинч — оба получили урезанный урон');
@@ -571,7 +773,8 @@ class ArenaScene extends Phaser.Scene {
 
       if (parried) {
         damage = 0;
-        this.flashWarning('ПАРИРОВАНИЕ', '#f5cb77');
+        this.spawnSparks(undefined, 22);
+        this.flashWarning('ПАРИРОВАНИЕ', '#f5cb77', 'player');
         this.sandBurst();
         this.knockbackOpponent();
         this.registerEnemyBlock();
@@ -585,9 +788,11 @@ class ArenaScene extends Phaser.Scene {
         damage = perfect
           ? 0
           : Math.ceil(damage * (shieldBroken ? SHIELD_BROKEN_FACTOR : 0.2));
+        this.spawnSparks(undefined, perfect ? 20 : 14);
         this.flashWarning(
           perfect ? 'ИДЕАЛЬНЫЙ БЛОК' : (shieldBroken ? 'ЩИТ СЛОМАН' : 'БЛОК'),
           perfect ? '#f5cb77' : '#c4b799',
+          'player',
         );
         this.registerEnemyBlock();
         if (perfect) {
@@ -628,7 +833,7 @@ class ArenaScene extends Phaser.Scene {
       this.enemyBlocksTaken = 0;
       this.enemyBrokenUntil = this.time.now + combat.breakStunMs;
       this.interruptEnemyOffense();
-      this.flashWarning('СЛОМ СТОЙКИ', '#e5c27c');
+      this.flashWarning('СЛОМ СТОЙКИ', '#e5c27c', 'player');
       this.game.events.emit('arena:status', 'Стойка врага сломлена — бей!');
     }
   }
@@ -639,7 +844,7 @@ class ArenaScene extends Phaser.Scene {
   } = {}): void {
     if (!this.running) return;
     if (this.time.now < this.playerStunnedUntil) {
-      this.flashWarning('ОГЛУШЁН', '#dc8c75');
+      this.flashWarning('ОГЛУШЁН', '#dc8c75', 'player');
       return;
     }
 
@@ -647,12 +852,13 @@ class ArenaScene extends Phaser.Scene {
     if (this.time.now <= this.knockbackBonusUntil && opts.isLunge) {
       mul *= KNOCKBACK_DAMAGE_MUL;
       this.knockbackBonusUntil = 0;
-      this.flashWarning('ВЫПАД С РАЗГОНА', '#f5cb77');
+      this.flashWarning('ВЫПАД С РАЗГОНА', '#f5cb77', 'player');
     }
 
     // Стена гасит выпад.
     const wallChance = this.combat().wallBlockChance;
     if (opts.isLunge && wallChance > 0 && Math.random() < wallChance) {
+      this.spawnSparks(undefined, 18);
       this.flashWarning('ЩИТ ВРАГА', '#c4b799');
       this.game.events.emit('arena:status', 'Стена погасила выпад');
       this.bloodHits = 0;
@@ -672,7 +878,7 @@ class ArenaScene extends Phaser.Scene {
       this.lastDummyHitAt = this.time.now;
       if (gap > 0 && gap < RICOCHET_GAP_MS) {
         this.playerStunnedUntil = this.time.now + RICOCHET_STUN_MS;
-        this.flashWarning('РИКОШЕТ', '#dc8c75');
+        this.flashWarning('РИКОШЕТ', '#dc8c75', 'player');
         this.game.events.emit('arena:status', 'Рикошет столба — сбей ритм');
         this.game.events.emit('arena:stun', { ms: RICOCHET_STUN_MS });
       }
@@ -682,7 +888,7 @@ class ArenaScene extends Phaser.Scene {
       this.bloodHits += 1;
       if (this.bloodHits >= BLOOD_HITS_FOR_FINISH && !this.finishReady) {
         this.finishReady = true;
-        this.flashWarning('ДОБИВАНИЕ', '#e5c27c');
+        this.flashWarning('ДОБИВАНИЕ', '#e5c27c', 'player');
         this.game.events.emit('arena:finish-ready');
       }
     } else {
@@ -702,20 +908,32 @@ class ArenaScene extends Phaser.Scene {
     if (!this.running || !this.playerFighter.armature) return;
     if (this.time.now < this.playerStunnedUntil) return;
     this.playerSwingUntil = this.time.now + CLINCH_WINDOW_MS + 400;
-    playLowHit(this, this.playerFighter.armature, () => {
-      this.slashEffect(this.playerFighter);
-      this.dealPlayerDamage(1);
-    });
+    this.setFighterDepths('player-attack');
+    playLowHit(
+      this,
+      this.playerFighter.armature,
+      () => {
+        this.slashEffect(this.playerFighter);
+        this.dealPlayerDamage(1);
+      },
+      () => this.setFighterDepths('idle'),
+    );
   }
 
   private hardAttack(): void {
     if (!this.running || !this.playerFighter.armature) return;
     if (this.time.now < this.playerStunnedUntil) return;
     this.playerSwingUntil = this.time.now + CLINCH_WINDOW_MS + 500;
-    playHardHit(this, this.playerFighter.armature, () => {
-      this.slashEffect(this.playerFighter);
-      this.dealPlayerDamage(1.45, false, { isLunge: true });
-    });
+    this.setFighterDepths('player-attack');
+    playHardHit(
+      this,
+      this.playerFighter.armature,
+      () => {
+        this.slashEffect(this.playerFighter);
+        this.dealPlayerDamage(1.45, false, { isLunge: true });
+      },
+      () => this.setFighterDepths('idle'),
+    );
   }
 
   private finishStrike(): void {
@@ -723,11 +941,17 @@ class ArenaScene extends Phaser.Scene {
     if (this.time.now < this.playerStunnedUntil) return;
     this.finishReady = false;
     this.playerSwingUntil = this.time.now + CLINCH_WINDOW_MS + 500;
-    playHardHit(this, this.playerFighter.armature, () => {
-      this.slashEffect(this.playerFighter);
-      this.dealPlayerDamage(FINISH_DAMAGE_MUL, true, { isFinish: true, isLunge: true });
-      this.flashWarning('ДОБИВАНИЕ!', '#f5cb77');
-    });
+    this.setFighterDepths('player-attack');
+    playHardHit(
+      this,
+      this.playerFighter.armature,
+      () => {
+        this.slashEffect(this.playerFighter);
+        this.dealPlayerDamage(FINISH_DAMAGE_MUL, true, { isFinish: true, isLunge: true });
+        this.flashWarning('ДОБИВАНИЕ!', '#f5cb77', 'player');
+      },
+      () => this.setFighterDepths('idle'),
+    );
     this.emitCombatHud();
   }
 
@@ -744,17 +968,23 @@ class ArenaScene extends Phaser.Scene {
     this.blockStartedAt = this.time.now;
     this.blockUntil = this.time.now + counterGuardMs;
     this.parryUntil = this.time.now + PARRY_WINDOW_MS + 40;
-    playCounter(this, this.playerFighter.armature, () => {
-      // Ответный взмах анимации — если враг уже прерван парированием, всё равно бьём слабее.
-      this.slashEffect(this.playerFighter);
-      this.dealPlayerDamage(1.15, true);
-      this.flashWarning('КОНТРАТАКА', '#f5cb77');
-    });
+    this.setFighterDepths('player-attack');
+    playCounter(
+      this,
+      this.playerFighter.armature,
+      () => {
+        this.slashEffect(this.playerFighter);
+        this.dealPlayerDamage(1.15, true);
+        this.flashWarning('КОНТРАТАКА', '#f5cb77', 'player');
+      },
+      () => this.setFighterDepths('idle'),
+    );
   }
 
   private interruptPlayerOffense(): void {
     if (!this.playerFighter.armature?.playing) return;
     interruptArmature(this, this.playerFighter.armature);
+    this.setFighterDepths('idle');
     this.blockUntil = 0;
     this.parryUntil = 0;
     this.playerSwingUntil = 0;
@@ -799,13 +1029,12 @@ class ArenaScene extends Phaser.Scene {
     this.running = false;
     this.enemyAttackEpoch += 1;
     this.clearEnemyTimers();
-    this.opponentAlert.setAlpha(0);
+    this.clearTelegraphWaves();
     this.finishReady = false;
     const winText = isTrainingDummy(this.opponent)
       ? `${this.opponent.name.toUpperCase()} СЛОМАН`
       : 'ПОБЕДА';
-    this.warning.setText(won ? winText : 'ПОРАЖЕНИЕ')
-      .setColor(won ? '#e5c27c' : '#dc8c75').setAlpha(1);
+    this.showResultBanner(won ? winText : 'ПОРАЖЕНИЕ', won);
     const [minGold, maxGold] = this.opponent.goldWin;
     this.game.events.emit('arena:finished', {
       won,
@@ -819,8 +1048,9 @@ class ArenaScene extends Phaser.Scene {
     this.running = false;
     this.enemyAttackEpoch += 1;
     this.clearEnemyTimers();
-    this.warning.setAlpha(0);
-    this.opponentAlert.setAlpha(0);
+    this.clearCallout();
+    this.clearResultBanner();
+    this.clearTelegraphWaves();
   }
 }
 

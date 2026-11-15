@@ -26,7 +26,6 @@ import {
   opponentMechanics,
   type Opponent,
 } from './opponents';
-import { COMBAT_MECHANICS } from './combat-mechanics';
 import {
   DEFAULT_PROFILE,
   STORAGE_KEY,
@@ -261,30 +260,25 @@ function renderArenaRoster(): string {
       <div class="opponent-list">
         ${OPPONENTS.map((opponent) => opponentCard(opponent)).join('')}
       </div>
-      <aside class="roster-aside roster-aside-sticky">
-        <div class="eyebrow">${escapeHtml(combat.label.toUpperCase())}</div>
-        <h2>${escapeHtml(opponentDisplayName(selected))}</h2>
-        <p>${escapeHtml(selected.blurb)}</p>
-        <div class="roster-stats">
-          <div><small>${isTrainingDummy(selected) ? 'ПРОЧН.' : 'HP'}</small><strong>${selected.hp}</strong></div>
-          <div><small>УДАР</small><strong>${isTrainingDummy(selected) ? '—' : selected.damage}</strong></div>
-          <div><small>✦</small><strong>${selected.goldWin[0]}–${selected.goldWin[1]}</strong></div>
+      <aside class="roster-aside roster-aside-sticky roster-aside-compact">
+        <div class="roster-pick-row">
+          <h2>${escapeHtml(opponentDisplayName(selected))}</h2>
+          <button type="button" class="info-toggle" data-info-toggle aria-label="Описание" aria-expanded="false">i</button>
         </div>
-        <div class="aside-mechanics aside-mechanics-compact">
-          ${mechanics.slice(0, 4).map((m) => `<div class="aside-mech"><strong>${escapeHtml(m.title)}</strong><span>${escapeHtml(m.blurb)}</span></div>`).join('')}
+        <div class="roster-info-panel" hidden data-info-panel>
+          <div class="eyebrow">${escapeHtml(combat.label.toUpperCase())}</div>
+          <p>${escapeHtml(selected.blurb)}</p>
+          <div class="roster-stats">
+            <div><small>${isTrainingDummy(selected) ? 'ПРОЧН.' : 'HP'}</small><strong>${selected.hp}</strong></div>
+            <div><small>УДАР</small><strong>${isTrainingDummy(selected) ? '—' : selected.damage}</strong></div>
+            <div><small>✦</small><strong>${selected.goldWin[0]}–${selected.goldWin[1]}</strong></div>
+          </div>
+          <div class="aside-mechanics aside-mechanics-compact">
+            ${mechanics.slice(0, 4).map((m) => `<div class="aside-mech"><strong>${escapeHtml(m.title)}</strong><span>${escapeHtml(m.blurb)}</span></div>`).join('')}
+          </div>
         </div>
         <button class="primary-button enter-arena-button" data-enter-arena ${selected.unlocked ? '' : 'disabled'}><span>В БОЙ</span><b>→</b></button>
       </aside>
-      <details class="mechanics-fold">
-        <summary>Все механики боя</summary>
-        <div class="mechanics-grid">
-          ${COMBAT_MECHANICS.map((m) => `
-            <article class="mechanic-card">
-              <strong>${escapeHtml(m.title)}</strong>
-              <p>${escapeHtml(m.blurb)}</p>
-            </article>`).join('')}
-        </div>
-      </details>
     </div>`;
 }
 
@@ -296,7 +290,7 @@ function opponentCard(opponent: Opponent): string {
   const mark = markById[opponent.id] ?? '⚔';
   return `<button class="opponent-card ${selected ? 'selected' : ''} ${opponent.unlocked ? '' : 'locked'}" data-opponent="${opponent.id}" ${opponent.unlocked ? '' : 'disabled'}>
     <span class="opponent-mark">${mark}</span>
-    <span class="opponent-copy"><small>${escapeHtml(opponent.label)}</small><strong>${escapeHtml(opponentDisplayName(opponent))}</strong><p>${escapeHtml(opponent.blurb)}</p></span>
+    <span class="opponent-copy"><small>${escapeHtml(opponent.label)}</small><strong>${escapeHtml(opponentDisplayName(opponent))}</strong></span>
     <span class="opponent-meta">${selected ? 'ВЫБРАН' : opponent.unlocked ? 'ОТКРЫТ' : 'ЗАКРЫТО'}</span>
   </button>`;
 }
@@ -358,6 +352,16 @@ function bindArenaRoster(): void {
     arenaMode = 'fight';
     battleStarted = false;
     render();
+  });
+  const infoToggle = app.querySelector<HTMLButtonElement>('[data-info-toggle]');
+  const infoPanel = app.querySelector<HTMLElement>('[data-info-panel]');
+  infoToggle?.addEventListener('click', () => {
+    if (!infoPanel) return;
+    const open = infoPanel.hasAttribute('hidden');
+    if (open) infoPanel.removeAttribute('hidden');
+    else infoPanel.setAttribute('hidden', '');
+    infoToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    infoToggle.classList.toggle('open', open);
   });
 }
 

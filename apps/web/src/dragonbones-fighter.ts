@@ -138,7 +138,7 @@ export const BUCKLER_URL = bucklerShieldUrl;
 export const SHIELD_TEXTURE_KEY = HEATER_TEXTURE_KEY;
 export const SHIELD_URL = HEATER_URL;
 
-export const gladiatorRigScale = 0.2;
+export const gladiatorRigScale = 0.135;
 /** Ступни на y=0 контейнера (после конвертации Spine → наша система). */
 export const gladiatorFootOffsetY = -806;
 
