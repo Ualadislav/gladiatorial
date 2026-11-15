@@ -1,5 +1,11 @@
 import { createArena } from './arena';
-import portraitUrl from '../../../prints/весь.png';
+import {
+  blockDurationMs,
+  counterDurationMs,
+  hardHitDurationMs,
+  lowHitDurationMs,
+} from './dragonbones-fighter';
+import portraitUrl from '../../../after_PS/голова.png';
 import {
   BOX_STARS,
   SUBSCRIPTION_STARS,
@@ -12,6 +18,16 @@ import {
   watchRewardedAd,
 } from './monetization';
 import {
+  OPPONENTS,
+  getOpponent,
+  isTrainingDummy,
+  opponentCombat,
+  opponentDisplayName,
+  opponentMechanics,
+  type Opponent,
+} from './opponents';
+import { COMBAT_MECHANICS } from './combat-mechanics';
+import {
   DEFAULT_PROFILE,
   STORAGE_KEY,
   type PlayerProfile,
@@ -21,6 +37,7 @@ import {
 import './style.css';
 
 type ViewName = 'arena' | 'forge' | 'hero' | 'market';
+type ArenaMode = 'roster' | 'fight';
 type ApiResponse<T> = T & { error?: string };
 
 function getAppRoot(): HTMLDivElement {
@@ -38,9 +55,12 @@ telegram?.disableVerticalSwipes();
 
 let profile = loadLocalProfile();
 let activeView: ViewName = 'arena';
+let arenaMode: ArenaMode = 'roster';
+let selectedOpponentId = OPPONENTS[0]?.id ?? 'pall';
 let arenaGame: Phaser.Game | undefined;
 let apiConnected = false;
 let attackLocked = false;
+let actionLockTimer: number | undefined;
 let battleStarted = false;
 let toastTimer: number | undefined;
 
@@ -214,34 +234,139 @@ function render(): void {
       <div id="toast" class="toast" role="status"></div>
     </div>`;
   bindNavigation();
-  if (activeView === 'arena') mountArena();
+  if (activeView === 'arena' && arenaMode === 'roster') bindArenaRoster();
+  if (activeView === 'arena' && arenaMode === 'fight') mountArena();
   if (activeView === 'forge') bindForge();
   if (activeView === 'hero') bindHero();
   if (activeView === 'market') bindMarket();
 }
 
+function selectedOpponent(): Opponent {
+  return getOpponent(selectedOpponentId) ?? OPPONENTS[0]!;
+}
+
 function renderArena(): string {
+  return arenaMode === 'fight' ? renderArenaFight(selectedOpponent()) : renderArenaRoster();
+}
+
+function renderArenaRoster(): string {
+  const selected = selectedOpponent();
+  const combat = opponentCombat(selected);
+  const mechanics = opponentMechanics(selected);
+  return `
+    <div class="page-heading">
+      <div><div class="eyebrow"><span class="eyebrow-line"></span> СЕЗОН I · ПЕСЧАНАЯ АРЕНА</div><h1>Выбери <em>соперника.</em></h1><p>От столва до глыбы Оро — каждый следующий удар тяжелее.</p></div>
+      <div class="rank-chip"><span>Ⅰ</span><div><small>ТВОЙ РАНГ</small><strong>Новичок</strong></div></div>
+    </div>
+    <div class="roster-layout">
+      <div class="opponent-list">
+        <div class="section-title"><span>СОПЕРНИКИ</span><i></i><small>АРЕНА I</small></div>
+        ${OPPONENTS.map((opponent) => opponentCard(opponent)).join('')}
+        <div class="section-title mechanics-title"><span>МЕХАНИКИ БОЯ</span><i></i><small>КАК ЧИТАТЬ ДУЭЛЬ</small></div>
+        <div class="mechanics-grid">
+          ${COMBAT_MECHANICS.map((m) => `
+            <article class="mechanic-card">
+              <strong>${escapeHtml(m.title)}</strong>
+              <p>${escapeHtml(m.blurb)}</p>
+            </article>`).join('')}
+        </div>
+      </div>
+      <aside class="roster-aside">
+        <div class="eyebrow">ВЫБРАН · ${escapeHtml(combat.label.toUpperCase())}</div>
+        <h2>${escapeHtml(opponentDisplayName(selected))}</h2>
+        <p>${escapeHtml(selected.blurb)}</p>
+        <div class="roster-stats">
+          <div><small>${isTrainingDummy(selected) ? 'ПРОЧНОСТЬ' : 'ЗДОРОВЬЕ'}</small><strong>${selected.hp}</strong></div>
+          <div><small>УДАР</small><strong>${isTrainingDummy(selected) ? '—' : selected.damage}</strong></div>
+          <div><small>НАГРАДА</small><strong>✦ ${selected.goldWin[0]}–${selected.goldWin[1]}</strong></div>
+        </div>
+        <div class="aside-mechanics">
+          <div class="eyebrow">ЕГО ПРИЁМЫ</div>
+          ${mechanics.map((m) => `<div class="aside-mech"><strong>${escapeHtml(m.title)}</strong><span>${escapeHtml(m.blurb)}</span></div>`).join('')}
+        </div>
+        <button class="primary-button enter-arena-button" data-enter-arena ${selected.unlocked ? '' : 'disabled'}><span>ВЫХОД НА АРЕНУ</span><b>→</b></button>
+      </aside>
+    </div>
+    <div class="bottom-strip"><span>ТВОЙ ГЛАДИАТОР</span><strong>УР. ${profile.level}</strong><i></i><span>СИЛА ${profile.strength}</span><i></i><span>ОРУЖИЕ +${profile.weapon}</span><button data-view="forge">УЛУЧШИТЬ <b>↗</b></button></div>`;
+}
+
+function opponentCard(opponent: Opponent): string {
+  const selected = opponent.id === selectedOpponentId;
+  const markById: Record<string, string> = {
+    pall: 'Ⅰ', ferr: 'Ⅱ', ulf: 'Ⅲ', lin: 'Ⅳ', kai: 'Ⅴ', oro: 'Ⅵ',
+  };
+  const mark = markById[opponent.id] ?? '⚔';
+  return `<button class="opponent-card ${selected ? 'selected' : ''} ${opponent.unlocked ? '' : 'locked'}" data-opponent="${opponent.id}" ${opponent.unlocked ? '' : 'disabled'}>
+    <span class="opponent-mark">${mark}</span>
+    <span class="opponent-copy"><small>${escapeHtml(opponent.label)}</small><strong>${escapeHtml(opponentDisplayName(opponent))}</strong><p>${escapeHtml(opponent.blurb)}</p></span>
+    <span class="opponent-meta">${selected ? 'ВЫБРАН' : opponent.unlocked ? 'ОТКРЫТ' : 'ЗАКРЫТО'}</span>
+  </button>`;
+}
+
+function renderArenaFight(opponent: Opponent): string {
+  const training = isTrainingDummy(opponent);
+  const combat = opponentCombat(opponent);
+  const mechanics = opponentMechanics(opponent);
+  const hint = training
+    ? (combat.ricochet
+      ? 'Рикошет: не бей слишком часто подряд — иначе стан. Копи серию к добиванию.'
+      : 'Столб молчит. Копи кровавую серию и жми добивание.')
+    : `${opponent.name} · ${combat.label}: финты, двойные и тяжёлые замахи. Контр = парирование.`;
+  const status = training ? `${opponent.name} стоит для ударов` : `${opponent.name} выходит на песок`;
   return `
     <div class="page-heading">
       <div><div class="eyebrow"><span class="eyebrow-line"></span> СЕЗОН I · ПЕСЧАНАЯ АРЕНА</div><h1>Докажи, <em>кто достоин.</em></h1><p>Один на один. Только мастерство и верный момент.</p></div>
       <div class="rank-chip"><span>Ⅰ</span><div><small>ТВОЙ РАНГ</small><strong>Новичок</strong></div></div>
     </div>
     <div class="arena-card">
-      <div class="arena-topline"><span class="fight-type"><i></i> ТРЕНИРОВОЧНЫЙ БОЙ</span><span class="round-label">БЕСТРУПОРНЫЙ · 1 НА 1</span></div>
+      <div class="arena-topline"><span class="fight-type"><i></i> ${escapeHtml(opponent.label)} · ${escapeHtml(combat.label.toUpperCase())}</span><span class="round-label">${escapeHtml(opponentDisplayName(opponent)).toUpperCase()}</span></div>
       <div class="fighter-panels">
-        <div class="fighter-info player-info"><div class="fighter-name">${escapeHtml(profile.username)}<span>УРОВЕНЬ ${profile.level}</span></div><div class="health-track"><i id="player-health" style="width:100%"></i></div><div class="health-caption"><span>ЗДОРОВЬЕ</span><b id="player-hp">${profile.vitality} / ${profile.vitality}</b></div></div>
-        <div class="fighter-info enemy-info"><div class="fighter-name">МАРКУС «ВОЛК»<span>СОПЕРНИК · УР. ${profile.level}</span></div><div class="health-track enemy-track"><i id="enemy-health" style="width:100%"></i></div><div class="health-caption"><span>ЗДОРОВЬЕ</span><b id="enemy-hp">110 / 110</b></div></div>
+        <div class="fighter-info player-info">
+          <div class="fighter-name">${escapeHtml(profile.username)}<span>УРОВЕНЬ ${profile.level}</span></div>
+          <div class="health-track"><i id="player-health" style="width:100%"></i></div>
+          <div class="health-caption"><span>ЗДОРОВЬЕ</span><b id="player-hp">${profile.vitality} / ${profile.vitality}</b></div>
+          <div class="resource-track shield-track"><i id="shield-bar" style="width:100%"></i></div>
+          <div class="health-caption"><span>ЩИТ</span><b id="shield-hp">100 / 100</b></div>
+        </div>
+        <div class="fighter-info enemy-info">
+          <div class="fighter-name">${escapeHtml(opponentDisplayName(opponent))}<span>${escapeHtml(opponent.label)}</span></div>
+          <div class="health-track enemy-track"><i id="enemy-health" style="width:100%"></i></div>
+          <div class="health-caption"><span>${training ? 'ПРОЧНОСТЬ' : 'ЗДОРОВЬЕ'}</span><b id="enemy-hp">${opponent.hp} / ${opponent.hp}</b></div>
+          <div class="resource-track blood-track"><i id="blood-bar" style="width:0%"></i></div>
+          <div class="health-caption"><span>СЕРИЯ</span><b id="blood-hits">0 / 3</b></div>
+        </div>
       </div>
       <div id="arena-canvas" class="arena-canvas"></div>
       <div id="floating-damage" class="floating-damage" aria-live="polite"></div>
-      <div class="arena-caption"><span class="caption-dot"></span><span id="battle-status">Соперник ждёт вызова</span><span class="arena-caption-right">АРЕНА I</span></div>
-      <div class="controls">
-        <button id="block-button" class="action-button block-button" aria-label="Блокировать удар"><span class="button-glyph">◈</span><span>БЛОК</span><small>Поймай момент</small></button>
-        <button id="attack-button" class="action-button attack-button" aria-label="Атаковать"><span class="button-glyph">⚔</span><span>АТАКА</span><small>Нанеси удар</small></button>
+      <div class="arena-caption"><span class="caption-dot"></span><span id="battle-status">${escapeHtml(status)}</span><span class="arena-caption-right">АРЕНА I</span></div>
+      <div class="controls controls-with-finish">
+        <button id="block-button" class="action-button block-button" aria-label="Блокировать удар"><span class="button-glyph">◈</span><span>БЛОК</span><small>Щит по замаху</small></button>
+        <button id="attack-button" class="action-button attack-button" aria-label="Лёгкая атака"><span class="button-glyph">⚔</span><span>АТАКА</span><small>Быстрый удар</small></button>
+        <button id="counter-button" class="action-button counter-button" aria-label="Парирование"><span class="button-glyph">↯</span><span>КОНТР</span><small>Парирование</small></button>
+        <button id="hard-attack-button" class="action-button hard-attack-button" aria-label="Тяжёлый удар"><span class="button-glyph">⛏</span><span>ВЫПАД</span><small>Тяжёлый удар</small></button>
+        <button id="finish-button" class="action-button finish-button" aria-label="Добивание" disabled><span class="button-glyph">☠</span><span>ДОБИТЬ</span><small>Кровавая серия</small></button>
       </div>
-      <div class="arena-hint"><span>✦</span> Нажми «Блок» точно перед ударом — идеальная защита оглушит соперника.</div>
+      <div class="arena-hint"><span>✦</span> ${escapeHtml(hint)}</div>
+      <div class="fight-mechanics">${mechanics.map((m) => `<span title="${escapeHtml(m.blurb)}">${escapeHtml(m.title)}</span>`).join('')}</div>
     </div>
-    <div class="bottom-strip"><span>ТВОЙ ГЛАДИАТОР</span><strong>УР. ${profile.level}</strong><i></i><span>СИЛА ${profile.strength}</span><i></i><span>ОРУЖИЕ +${profile.weapon}</span><button data-view="forge">УЛУЧШИТЬ <b>↗</b></button></div>`;
+    <div class="bottom-strip"><span>ТВОЙ ГЛАДИАТОР</span><strong>УР. ${profile.level}</strong><i></i><span>СИЛА ${profile.strength}</span><i></i><span>ОРУЖИЕ +${profile.weapon}</span><button type="button" data-leave-arena>К СПИСКУ <b>↗</b></button></div>`;
+}
+
+function bindArenaRoster(): void {
+  app.querySelectorAll<HTMLButtonElement>('[data-opponent]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.opponent;
+      if (!id || !getOpponent(id)?.unlocked) return;
+      selectedOpponentId = id;
+      render();
+    });
+  });
+  app.querySelector('[data-enter-arena]')?.addEventListener('click', () => {
+    if (!selectedOpponent().unlocked) return;
+    arenaMode = 'fight';
+    battleStarted = false;
+    render();
+  });
 }
 
 function renderForge(): string {
@@ -324,9 +449,15 @@ function bindNavigation(): void {
       const view = button.dataset.view;
       if (view === 'arena' || view === 'forge' || view === 'hero' || view === 'market') {
         activeView = view;
+        if (view === 'arena') arenaMode = 'roster';
         render();
       }
     });
+  });
+  app.querySelector('[data-leave-arena]')?.addEventListener('click', () => {
+    arenaMode = 'roster';
+    battleStarted = false;
+    render();
   });
 }
 
@@ -384,36 +515,69 @@ function mountArena(): void {
   const mount = app.querySelector<HTMLElement>('#arena-canvas');
   if (!mount) return;
   battleStarted = false;
-  arenaGame = createArena(mount, profile, onArenaEvent);
-  app.querySelector('#attack-button')?.addEventListener('click', attack);
-  app.querySelector<HTMLButtonElement>('#block-button')?.addEventListener('pointerdown', block);
+  arenaGame = createArena(mount, profile, selectedOpponent(), onArenaEvent);
+  app.querySelector('#attack-button')?.addEventListener('click', () => strike('battle:attack', lowHitDurationMs, '#attack-button'));
+  app.querySelector('#hard-attack-button')?.addEventListener('click', () => strike('battle:hard-attack', hardHitDurationMs, '#hard-attack-button'));
+  app.querySelector('#finish-button')?.addEventListener('click', () => {
+    const button = app.querySelector<HTMLButtonElement>('#finish-button');
+    if (!button || button.disabled || attackLocked) return;
+    strike('battle:finish', hardHitDurationMs, '#finish-button');
+  });
+  app.querySelector<HTMLButtonElement>('#block-button')?.addEventListener('pointerdown', (event) => guard(event, 'battle:block', blockDurationMs, '#block-button'));
+  app.querySelector<HTMLButtonElement>('#counter-button')?.addEventListener('pointerdown', (event) => guard(event, 'battle:counter', counterDurationMs, '#counter-button'));
 }
 
-function attack(): void {
-  if (attackLocked) return;
-  const scene = arenaGame?.scene.getScene('Arena') as Phaser.Scene | undefined;
-  if (!battleStarted) {
-    scene?.events.emit('battle:start');
-    battleStarted = true;
+function ensureBattleStarted(scene: Phaser.Scene | undefined): void {
+  if (battleStarted) return;
+  scene?.events.emit('battle:start');
+  battleStarted = true;
+}
+
+function getArenaScene(): Phaser.Scene | undefined {
+  return arenaGame?.scene.getScene('Arena') as Phaser.Scene | undefined;
+}
+
+function clearActionLock(): void {
+  if (actionLockTimer !== undefined) {
+    window.clearTimeout(actionLockTimer);
+    actionLockTimer = undefined;
   }
-  scene?.events.emit('battle:attack');
+  attackLocked = false;
+  for (const id of ['#attack-button', '#hard-attack-button', '#block-button', '#counter-button', '#finish-button']) {
+    app.querySelector<HTMLButtonElement>(id)?.classList.remove('pressed');
+  }
+}
+
+function lockActions(lockMs: number, buttonSelector: string): void {
+  clearActionLock();
   attackLocked = true;
-  const button = app.querySelector<HTMLButtonElement>('#attack-button');
+  const button = app.querySelector<HTMLButtonElement>(buttonSelector);
   button?.classList.add('pressed');
-  window.setTimeout(() => {
+  actionLockTimer = window.setTimeout(() => {
+    actionLockTimer = undefined;
     attackLocked = false;
     button?.classList.remove('pressed');
-  }, 440);
+  }, Math.ceil(lockMs));
 }
 
-function block(event: PointerEvent): void {
+function strike(eventName: string, lockMs: number, buttonSelector: string): void {
+  if (attackLocked) return;
+  const scene = getArenaScene();
+  ensureBattleStarted(scene);
+  if (!scene) {
+    console.error('Arena scene missing for', eventName);
+    return;
+  }
+  scene.events.emit(eventName);
+  lockActions(lockMs, buttonSelector);
+}
+
+function guard(event: PointerEvent, eventName: string, lockMs: number, buttonSelector: string): void {
   event.preventDefault();
-  if (!battleStarted || !arenaGame) return;
-  const scene = arenaGame?.scene.getScene('Arena') as Phaser.Scene | undefined;
-  scene?.events.emit('battle:block');
-  const button = app.querySelector<HTMLButtonElement>('#block-button');
-  button?.classList.add('pressed');
-  window.setTimeout(() => button?.classList.remove('pressed'), 250);
+  if (!battleStarted || !arenaGame || attackLocked) return;
+  const scene = arenaGame.scene.getScene('Arena') as Phaser.Scene | undefined;
+  scene?.events.emit(eventName);
+  lockActions(lockMs, buttonSelector);
 }
 
 function onArenaEvent(event: string, value?: unknown): void {
@@ -426,13 +590,64 @@ function onArenaEvent(event: string, value?: unknown): void {
     document.querySelector('#player-health')?.classList.toggle('low', health.player / health.maxPlayer < 0.3);
     return;
   }
+  if (event === 'arena:interrupt') {
+    clearActionLock();
+    setText('#battle-status', 'Удар сорван — тебя попали');
+    document.querySelector('.caption-dot')?.classList.remove('warning');
+    return;
+  }
   if (event === 'arena:telegraph') {
-    setText('#battle-status', 'Соперник замахивается — приготовься блокировать');
+    const foe = selectedOpponent();
+    const pattern = value && typeof value === 'object' && 'pattern' in value
+      ? String((value as { pattern: string }).pattern)
+      : 'normal';
+    const byPattern: Record<string, string> = {
+      feint: `${foe.name} финтит — не жми блок рано`,
+      double: `${foe.name}: двойной удар — держи блок`,
+      heavy: `${foe.name}: ТЯЖЁЛЫЙ замах!`,
+      normal: `${foe.name} замахивается — блок или контр`,
+    };
+    setText('#battle-status', byPattern[pattern] ?? byPattern.normal!);
     document.querySelector('.caption-dot')?.classList.add('warning');
     return;
   }
+  if (event === 'arena:status' && typeof value === 'string') {
+    setText('#battle-status', value);
+    return;
+  }
+  if (event === 'arena:combat' && value && typeof value === 'object') {
+    const hud = value as {
+      shield: number;
+      shieldMax: number;
+      blood: number;
+      bloodNeed: number;
+      finishReady: boolean;
+    };
+    setText('#shield-hp', `${hud.shield} / ${hud.shieldMax}`);
+    setWidth('#shield-bar', hud.shield / hud.shieldMax);
+    setText('#blood-hits', `${hud.blood} / ${hud.bloodNeed}`);
+    setWidth('#blood-bar', hud.blood / hud.bloodNeed);
+    const finish = app.querySelector<HTMLButtonElement>('#finish-button');
+    if (finish) {
+      finish.disabled = !hud.finishReady;
+      finish.classList.toggle('ready', hud.finishReady);
+    }
+    return;
+  }
+  if (event === 'arena:finish-ready') {
+    setText('#battle-status', 'Кровавая серия! Жми «Добить»');
+    app.querySelector('#finish-button')?.classList.add('ready');
+    return;
+  }
+  if (event === 'arena:stun') {
+    setText('#battle-status', 'Оглушение — подожди мгновение');
+    return;
+  }
   if (event === 'arena:ready') {
-    setText('#battle-status', 'Нажми «Атака», чтобы начать бой');
+    const ready = isTrainingDummy(selectedOpponent())
+      ? 'Нажми «Атака» или «Выпад», чтобы начать тренировку'
+      : 'Нажми «Атака» или «Выпад», чтобы начать бой';
+    setText('#battle-status', ready);
     return;
   }
   if (event === 'arena:damage' && value && typeof value === 'object') {
@@ -453,8 +668,9 @@ function onArenaEvent(event: string, value?: unknown): void {
   if (event === 'arena:finished' && value && typeof value === 'object') {
     const result = value as { won: boolean; gold: number; xp: number };
     battleStarted = false;
-    app.querySelector<HTMLButtonElement>('#attack-button')?.setAttribute('disabled', '');
-    app.querySelector<HTMLButtonElement>('#block-button')?.setAttribute('disabled', '');
+    for (const id of ['#attack-button', '#hard-attack-button', '#block-button', '#counter-button', '#finish-button']) {
+      app.querySelector<HTMLButtonElement>(id)?.setAttribute('disabled', '');
+    }
     const gold = subscriptionActive(profile) ? Math.round(result.gold * 1.15) : result.gold;
     profile.gold += gold;
     profile.xp += result.xp;
@@ -467,7 +683,10 @@ function onArenaEvent(event: string, value?: unknown): void {
     const status = document.querySelector('#battle-status');
     if (status) status.textContent = `${result.won ? 'Победа! ' : 'Поражение. '}Награда: ${gold} золота · ${result.xp} XP`;
     window.setTimeout(() => {
-      if (activeView === 'arena') render();
+      if (activeView === 'arena') {
+        arenaMode = 'roster';
+        render();
+      }
     }, 2400);
   }
 }

@@ -1,0 +1,90 @@
+
+gladiarot_all_tex.png
+size: 1024,1024
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+лево_предплечЬе
+  rotate: false
+  xy: 569,1
+  size: 168,348
+  orig: 168,348
+  offset:0,0
+  index: -1
+лево_кулак_меч
+  rotate: false
+  xy: 1,892
+  size: 320,91
+  orig: 320,91
+  offset:0,0
+  index: -1
+лево_плечо
+  rotate: false
+  xy: 1,595
+  size: 246,295
+  orig: 246,295
+  offset:0,0
+  index: -1
+лево_голень
+  rotate: false
+  xy: 372,480
+  size: 206,413
+  orig: 206,413
+  offset:0,0
+  index: -1
+лево_бедро
+  rotate: false
+  xy: 580,699
+  size: 157,318
+  orig: 157,318
+  offset:0,0
+  index: -1
+тело
+  rotate: false
+  xy: 1,1
+  size: 369,592
+  orig: 369,592
+  offset:0,0
+  index: -1
+право_голень
+  rotate: false
+  xy: 372,1
+  size: 195,477
+  orig: 195,477
+  offset:0,0
+  index: -1
+право_бедро
+  rotate: false
+  xy: 580,351
+  size: 153,346
+  orig: 153,346
+  offset:0,0
+  index: -1
+голова
+  rotate: false
+  xy: 739,699
+  size: 180,236
+  orig: 180,236
+  offset:0,0
+  index: -1
+право кулак
+  rotate: false
+  xy: 323,895
+  size: 94,110
+  orig: 94,110
+  offset:0,0
+  index: -1
+право_плечо
+  rotate: false
+  xy: 735,351
+  size: 150,271
+  orig: 150,271
+  offset:0,0
+  index: -1
+предплечъе левое
+  rotate: false
+  xy: 739,1
+  size: 168,348
+  orig: 168,348
+  offset:0,0
+  index: -1

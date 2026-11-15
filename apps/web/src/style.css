@@ -103,6 +103,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
 .enemy-track i { float: right; background: linear-gradient(90deg, #bb5141, #e39465); }
 .health-caption { margin-top: 5px; display: flex; justify-content: space-between; color: #837d71; font-size: 7px; letter-spacing: .5px; }
 .health-caption b { color: #c8bda9; font-size: 8px; }
+.resource-track { height: 3px; margin-top: 7px; overflow: hidden; background: #ffffff12; }
+.resource-track i { height: 100%; display: block; transition: width .2s ease; }
+.shield-track i { background: linear-gradient(90deg, #6a7f98, #b7c7d8); }
+.blood-track i { float: right; background: linear-gradient(90deg, #8a2f2a, #d45a45); }
 .arena-canvas { width: 100%; height: clamp(215px, 28vw, 310px); }
 .arena-canvas canvas { display: block; }
 .floating-damage { position: absolute; z-index: 2; top: 45%; left: 50%; color: #f0c77f; font: 800 13px Manrope, sans-serif; letter-spacing: 1px; text-shadow: 0 3px 12px #100d08; opacity: 0; pointer-events: none; transform: translate(-50%, 8px); }
@@ -113,20 +117,45 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
 .caption-dot.warning { background: #ec8c60; box-shadow: 0 0 8px #ec8c60; animation: pulse .6s ease infinite alternate; }
 @keyframes pulse { to { opacity: .35; } }
 .arena-caption-right { margin-left: auto; color: #716b60; font-size: 7px; letter-spacing: 1px; }
-.controls { min-height: 89px; padding: 11px 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border-top: 1px solid #ffffff0c; background: #12120f; }
-.action-button { min-height: 64px; display: grid; grid-template-columns: 24px 1fr; grid-template-rows: 1fr 1fr; align-content: center; align-items: end; padding: 12px 16px; border: 1px solid #c7bca625; background: #211f1a; text-align: left; cursor: pointer; touch-action: manipulation; transition: background .13s, transform .13s, border-color .13s; }
+.controls { min-height: 148px; padding: 11px 14px; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; border-top: 1px solid #ffffff0c; background: #12120f; }
+.controls-with-finish { grid-template-rows: 1fr 1fr auto; }
+.finish-button { grid-column: 1 / -1; border-color: #7a303045; background: #1a1212; opacity: .55; }
+.finish-button.ready { opacity: 1; border-color: #d45a4588; background: linear-gradient(120deg, #5a1f1a, #2a1412); box-shadow: inset 0 0 0 1px #d45a4533; }
+.finish-button .button-glyph, .finish-button > span:nth-child(2) { color: #f0a090; }
+.finish-button small { color: #b07a6e; }
+.action-button { min-height: 58px; display: grid; grid-template-columns: 22px 1fr; grid-template-rows: 1fr 1fr; align-content: center; align-items: end; padding: 10px 12px; border: 1px solid #c7bca625; background: #211f1a; text-align: left; cursor: pointer; touch-action: manipulation; transition: background .13s, transform .13s, border-color .13s; }
 .action-button:active, .action-button.pressed { transform: translateY(1px); }
-.button-glyph { grid-row: 1 / 3; align-self: center; color: #c4b393; font-size: 19px; }
-.action-button > span:nth-child(2) { align-self: end; color: #eee5d6; font-size: 10px; font-weight: 700; letter-spacing: 1.1px; }
-.action-button small { align-self: end; color: #8e8779; font-size: 8px; }
+.action-button:disabled { opacity: .45; pointer-events: none; }
+.button-glyph { grid-row: 1 / 3; align-self: center; color: #c4b393; font-size: 17px; }
+.action-button > span:nth-child(2) { align-self: end; color: #eee5d6; font-size: 9px; font-weight: 700; letter-spacing: 1.1px; }
+.action-button small { align-self: end; color: #8e8779; font-size: 7px; }
 .block-button { border-color: #9b895e45; }
 .block-button.pressed { background: #373020; border-color: #d3b778; }
+.counter-button { border-color: #8a6f4545; background: #242018; }
+.counter-button .button-glyph, .counter-button > span:nth-child(2) { color: #e0c58a; }
+.counter-button small { color: #a8956d; }
+.counter-button.pressed { background: #3a3220; border-color: #d3b778; }
 .attack-button { border-color: #a66c4e67; background: linear-gradient(120deg, #542d21, #34211b); }
 .attack-button .button-glyph, .attack-button > span:nth-child(2) { color: #f1c195; }
 .attack-button small { color: #c2987e; }
 .attack-button.pressed { background: #723b29; }
+.hard-attack-button { border-color: #a6543e67; background: linear-gradient(120deg, #5c2418, #3a1a14); }
+.hard-attack-button .button-glyph, .hard-attack-button > span:nth-child(2) { color: #f3b08c; }
+.hard-attack-button small { color: #c4876a; }
+.hard-attack-button.pressed { background: #7a3422; }
 .arena-hint { min-height: 31px; padding: 7px 16px; border-top: 1px solid #ffffff09; color: #8e887b; font-size: 9px; }
 .arena-hint span { margin-right: 6px; color: var(--gold); }
+.fight-mechanics { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 14px 10px; border-top: 1px solid #ffffff08; }
+.fight-mechanics span { padding: 3px 7px; border: 1px solid #caa56828; color: #b5a88f; font-size: 7px; letter-spacing: .6px; }
+.mechanics-title { margin-top: 22px; }
+.mechanics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.mechanic-card { padding: 10px 11px; border: 1px solid #ffffff10; background: #161513; }
+.mechanic-card strong { display: block; margin-bottom: 5px; color: #e2d6c0; font-size: 10px; letter-spacing: .4px; }
+.mechanic-card p { margin: 0; color: #8f8779; font-size: 9px; line-height: 1.45; }
+.aside-mechanics { margin: 16px 0 14px; display: grid; gap: 8px; }
+.aside-mech { padding-bottom: 8px; border-bottom: 1px solid #ffffff0c; }
+.aside-mech strong { display: block; margin-bottom: 3px; color: var(--gold-bright); font-size: 10px; }
+.aside-mech span { color: #8f8779; font-size: 9px; line-height: 1.45; }
 .bottom-strip { min-height: 54px; margin-top: 13px; padding: 0 16px; display: flex; align-items: center; gap: 14px; border: 1px solid #ffffff10; background: #191916; color: #a59c8d; font-size: 8px; letter-spacing: .7px; }
 .bottom-strip > strong { color: var(--gold-bright); font-size: 9px; }
 .bottom-strip > i { height: 12px; width: 1px; background: #ffffff20; }
@@ -160,6 +189,28 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
 .reward-row strong { color: var(--gold-bright); font-size: 10px; }
 .primary-button { width: 100%; min-height: 39px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #d0ad6c66; background: linear-gradient(100deg, #a1783e2e, #c59b5d17); color: #e5cc98; font-size: 8px; font-weight: 700; letter-spacing: .9px; cursor: pointer; }
 .primary-button:hover { background-color: #caa56826; }
+.roster-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(240px, .75fr); gap: 18px; }
+.opponent-list { display: grid; gap: 10px; align-content: start; }
+.opponent-card { min-height: 88px; padding: 14px 13px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 12px; align-items: center; border: 1px solid #ffffff12; background: #191916; text-align: left; color: inherit; cursor: pointer; }
+.opponent-card.selected { border-color: #caa56876; background: #caa5680d; }
+.opponent-card.locked { opacity: .55; cursor: default; }
+.opponent-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #caa5684d; border-radius: 50%; color: var(--gold-bright); font: 16px Georgia, serif; }
+.opponent-copy { min-width: 0; }
+.opponent-copy small, .opponent-copy strong, .opponent-copy p { display: block; }
+.opponent-copy small { color: var(--gold); font-size: 7px; font-weight: 700; letter-spacing: 1px; }
+.opponent-copy strong { margin-top: 5px; font-size: 13px; }
+.opponent-copy p { margin: 6px 0 0; color: #90897d; font-size: 9px; line-height: 1.45; }
+.opponent-meta { color: #a89876; font-size: 7px; letter-spacing: .8px; white-space: nowrap; }
+.roster-aside { min-height: 280px; padding: 22px 18px 18px; border: 1px solid #caa5682e; background: radial-gradient(ellipse at 80% 6%, #8d683319, transparent 43%), #181714; }
+.roster-aside h2 { margin: 14px 0 10px; font: 500 24px/1.25 Manrope, sans-serif; }
+.roster-aside > p { margin: 0; color: #9b9487; font-size: 10px; line-height: 1.7; }
+.roster-stats { margin: 22px 0 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.roster-stats > div { padding: 10px 8px; border: 1px solid #ffffff10; background: #ffffff04; }
+.roster-stats small, .roster-stats strong { display: block; }
+.roster-stats small { color: #857e71; font-size: 6px; letter-spacing: .7px; }
+.roster-stats strong { margin-top: 6px; color: #e2c78e; font: 600 13px Manrope, sans-serif; }
+.enter-arena-button { margin-top: auto; }
+.enter-arena-button:disabled { opacity: .45; cursor: default; }
 .market-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .market-card { min-height: 230px; padding: 18px 16px 16px; display: flex; flex-direction: column; border: 1px solid #caa56826; background: #191916; }
 .market-card small { color: var(--gold); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
@@ -278,6 +329,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
   .action-button { min-height: 66px; padding: 10px 12px; }
   .action-button > span:nth-child(2) { font-size: 10px; }
   .arena-hint { padding: 8px 11px; font-size: 8px; line-height: 1.45; }
+  .mechanics-grid { grid-template-columns: 1fr; }
+  .fight-mechanics { padding: 6px 11px 10px; }
   .bottom-strip { min-height: 48px; padding: 0 10px; gap: 8px; font-size: 7px; }
   .bottom-strip > strong { font-size: 8px; }
   .bottom-strip button { padding: 7px; font-size: 7px; }
@@ -285,8 +338,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--gold-bright); o
   .mobile-nav button { min-width: 70px; display: grid; justify-items: center; gap: 3px; border: 0; background: none; color: #8e897e; font-size: 8px; cursor: pointer; }
   .mobile-nav button > span { font-size: 17px; }
   .mobile-nav button.active { color: var(--gold-bright); }
-  .market-grid, .forge-layout { grid-template-columns: 1fr; gap: 15px; }
+  .market-grid, .forge-layout, .roster-layout { grid-template-columns: 1fr; gap: 15px; }
   .market-card { min-height: 0; }
+  .roster-aside { min-height: 0; }
   .forge-aside { min-height: auto; padding: 17px; }
   .forge-aside h2 { margin: 11px 0 7px; font-size: 19px; }
   .forge-aside p { max-width: 290px; margin: 0; font-size: 9px; }
