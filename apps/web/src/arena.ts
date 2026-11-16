@@ -354,7 +354,8 @@ class ArenaScene extends Phaser.Scene {
       targets: state,
       t: 1,
       duration: Math.max(180, durationMs),
-      ease: 'Linear',
+      // Sine: волны «дышат» вместо ровного машинного тика.
+      ease: 'Sine.InOut',
       onUpdate: () => {
         if (!g.active) return;
         const shoulder = this.opponentShoulderPoint();
@@ -363,8 +364,10 @@ class ArenaScene extends Phaser.Scene {
         const elapsed = state.t * Math.max(180, durationMs);
         for (let i = 0; i < 3; i += 1) {
           const phase = ((elapsed / cycleMs) + i / 3) % 1;
-          const r = 16 + phase * 28;
-          const a = waveAlpha * (1 - phase * 0.7);
+          // Мягкое появление/затухание волны (smoothstep по phase).
+          const fade = phase * phase * (3 - 2 * phase);
+          const r = 16 + fade * 28;
+          const a = waveAlpha * (1 - fade * 0.75);
           g.lineStyle(3.2, 0xff2a2a, a);
           // Боковые дуги в стороны от плеч (не через торс).
           g.beginPath();

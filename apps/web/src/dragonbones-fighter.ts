@@ -521,13 +521,16 @@ export function stopArmatureAnimation(
   armature.playing = false;
 }
 
-/** Обрыв текущей атаки/анимации с возвратом в rest. */
+/** Мягкий возврат в rest вместо мгновенного snap (убирает «каменный» обрыв). */
+const SETTLE_MS = 110;
+
+/** Обрыв текущей атаки/анимации с плавным возвратом в rest. */
 export function interruptArmature(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
 ): void {
   stopArmatureAnimation(scene, armature);
-  resetArmaturePose(armature);
+  settleArmatureToRest(scene, armature, SETTLE_MS);
 }
 
 export function resetArmaturePose(armature: GladiatorArmature): void {
@@ -537,6 +540,91 @@ export function resetArmaturePose(armature: GladiatorArmature): void {
   }
   // Не сбрасываем smoothRot — иначе щит на конце анимации дёргается.
   syncArmatureDisplays(armature);
+}
+
+/** Плавный довод костей к rest-позе (Cubic.Out). */
+function settleArmatureToRest(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  durationMs: number,
+  onComplete?: () => void,
+): void {
+  const epoch = armature.actionEpoch;
+  let pending = 0;
+
+  const done = (): void => {
+    if (epoch !== armature.actionEpoch) return;
+    pending -= 1;
+    if (pending > 0) return;
+    resetArmaturePose(armature);
+    onComplete?.();
+  };
+
+  for (const [name, bone] of armature.bones) {
+    const pose = armature.rest.get(name);
+    if (!pose) continue;
+    const curDeg = Phaser.Math.RadToDeg(bone.rotation);
+    const needAngle = Math.abs(curDeg - pose.angle) > 0.2;
+    const needPos = Math.abs(bone.x - pose.x) > 0.4 || Math.abs(bone.y - pose.y) > 0.4;
+    if (!needAngle && !needPos) continue;
+
+    pending += 1;
+    const state: Record<string, number> = {};
+    const tweenTo: Record<string, number> = {};
+    if (needAngle) {
+      state.deg = curDeg;
+      tweenTo.deg = pose.angle;
+    }
+    if (needPos) {
+      state.x = bone.x;
+      state.y = bone.y;
+      tweenTo.x = pose.x;
+      tweenTo.y = pose.y;
+    }
+    armature.tweenProxies.push(state);
+    scene.tweens.add({
+      targets: state,
+      ...tweenTo,
+      duration: durationMs,
+      ease: 'Cubic.Out',
+      onUpdate: () => {
+        if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
+        if (state.x !== undefined) bone.setX(state.x);
+        if (state.y !== undefined) bone.setY(state.y);
+      },
+      onComplete: done,
+    });
+  }
+
+  if (pending === 0) {
+    resetArmaturePose(armature);
+    onComplete?.();
+  }
+}
+
+/**
+ * Сегментный easing для редких Spine-ключей без curve:
+ * уход от rest — разгон (удар/замах), возврат — торможение, иначе мягкий InOut.
+ */
+function segmentEase(
+  from: Record<string, number>,
+  to: Record<string, number>,
+  restAngle?: number,
+): string {
+  if (from.deg !== undefined && to.deg !== undefined && restAngle !== undefined) {
+    const fromDev = Math.abs(from.deg - restAngle);
+    const toDev = Math.abs(to.deg - restAngle);
+    if (toDev > fromDev + 0.5) return 'Cubic.In';
+    if (fromDev > toDev + 0.5) return 'Cubic.Out';
+  }
+  if (from.x !== undefined || from.y !== undefined) {
+    const fromDist = Math.hypot(from.x ?? 0, from.y ?? 0);
+    const toDist = Math.hypot(to.x ?? 0, to.y ?? 0);
+    // translate в скелете — абсолютные координаты кости, не дельта от rest;
+    // для чистого x/y без angle используем Sine.InOut.
+    if (Math.abs(toDist - fromDist) > 8) return 'Sine.InOut';
+  }
+  return 'Sine.InOut';
 }
 
 /**
@@ -551,6 +639,7 @@ function tweenKeyframes(
   keys: Array<{ time: number; props: Record<string, number> }>,
   onSegmentEnd?: (endedAt: number) => void,
   onTrackDone?: () => void,
+  options: { fromCurrent?: boolean; restAngle?: number } = {},
 ): void {
   const play = (index: number): void => {
     const current = keys[index];
@@ -559,12 +648,17 @@ function tweenKeyframes(
       onTrackDone?.();
       return;
     }
-    if (current.props.angle !== undefined) {
-      bone.rotation = Phaser.Math.DegToRad(current.props.angle);
+
+    const blendFromPose = Boolean(options.fromCurrent) && index === 0;
+    if (!blendFromPose) {
+      if (current.props.angle !== undefined) {
+        bone.rotation = Phaser.Math.DegToRad(current.props.angle);
+      }
+      if (current.props.x !== undefined) bone.setX(current.props.x);
+      if (current.props.y !== undefined) bone.setY(current.props.y);
+      syncArmatureDisplays(armature);
     }
-    if (current.props.x !== undefined) bone.setX(current.props.x);
-    if (current.props.y !== undefined) bone.setY(current.props.y);
-    syncArmatureDisplays(armature);
+
     if (!next) {
       onTrackDone?.();
       return;
@@ -573,15 +667,17 @@ function tweenKeyframes(
     const state: Record<string, number> = {};
     const tweenTo: Record<string, number> = {};
     if (next.props.angle !== undefined) {
-      state.deg = current.props.angle ?? Phaser.Math.RadToDeg(bone.rotation);
+      state.deg = blendFromPose
+        ? Phaser.Math.RadToDeg(bone.rotation)
+        : (current.props.angle ?? Phaser.Math.RadToDeg(bone.rotation));
       tweenTo.deg = next.props.angle;
     }
     if (next.props.x !== undefined) {
-      state.x = current.props.x ?? bone.x;
+      state.x = blendFromPose ? bone.x : (current.props.x ?? bone.x);
       tweenTo.x = next.props.x;
     }
     if (next.props.y !== undefined) {
-      state.y = current.props.y ?? bone.y;
+      state.y = blendFromPose ? bone.y : (current.props.y ?? bone.y);
       tweenTo.y = next.props.y;
     }
     armature.tweenProxies.push(state);
@@ -589,7 +685,7 @@ function tweenKeyframes(
       targets: state,
       ...tweenTo,
       duration,
-      ease: 'Linear',
+      ease: segmentEase(state, tweenTo, options.restAngle),
       onUpdate: () => {
         if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
         if (state.x !== undefined) bone.setX(state.x);
@@ -619,7 +715,7 @@ export function playArmatureAnimation(
 ): number {
   const anim = requireAnim(animationName);
   stopArmatureAnimation(scene, armature);
-  resetArmaturePose(armature);
+  // Не snap в rest: первый сегмент блендится из текущей позы (плавные отмены/смены).
   const epoch = armature.actionEpoch;
   armature.playing = true;
 
@@ -632,8 +728,11 @@ export function playArmatureAnimation(
     if (pending > 0) return;
     armature.playing = false;
     armature.impactTimer = null;
-    resetArmaturePose(armature);
-    options.onComplete?.();
+    // Короткий settle вместо hard reset — убирает микро-рывок на последнем кадре.
+    settleArmatureToRest(scene, armature, 70, () => {
+      if (epoch !== armature.actionEpoch) return;
+      options.onComplete?.();
+    });
   };
 
   const fireImpact = (): void => {
@@ -659,6 +758,7 @@ export function playArmatureAnimation(
       keys.map((key) => ({ time: key.time, props: { angle: pose.angle + key.angle } })),
       undefined,
       finishOne,
+      { fromCurrent: true, restAngle: pose.angle },
     );
   }
 
@@ -677,6 +777,7 @@ export function playArmatureAnimation(
       })),
       undefined,
       finishOne,
+      { fromCurrent: true },
     );
   }
 
