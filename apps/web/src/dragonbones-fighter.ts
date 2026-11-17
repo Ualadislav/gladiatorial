@@ -264,6 +264,11 @@ export type GladiatorArmature = {
   idling: boolean;
   /** Временный оверлей: круги hip/knee/ankle + линии кости. */
   boneDebug?: Phaser.GameObjects.Graphics;
+  /**
+   * Замороженные цели стоп в armature.space (stand capture).
+   * Debug рисует yellow plant lines по ним — не по текущим лодыжкам.
+   */
+  plantedAnkles?: { left: { x: number; y: number }; right: { x: number; y: number } };
 };
 
 export function ensureGladiatorPartsLoaded(
@@ -604,90 +609,130 @@ function ankleInSpace(
   return bonePointInSpace(shin, armature.space, BONE_LENGTH[shinName] ?? 200, 0);
 }
 
-/**
- * После FK-поворота ног сдвигает root так, чтобы средняя точка лодыжек
- * осталась на planted (стопы не едут вперёд/вверх).
- */
-function plantFeetAt(
+function hipInSpace(
   armature: GladiatorArmature,
-  rootBone: Phaser.GameObjects.Container,
-  rootRest: BoneRest,
-  planted: { x: number; y: number },
-): void {
-  // Сначала root в rest — измеряем дрейф лодыжек от чистого FK.
-  rootBone.setPosition(rootRest.x, rootRest.y);
-  const left = ankleInSpace(armature, 'леваяГолень');
-  const right = ankleInSpace(armature, 'право_голень');
-  if (!left || !right) return;
-  const curX = (left.x + right.x) * 0.5;
-  const curY = (left.y + right.y) * 0.5;
-  rootBone.setPosition(
-    rootRest.x + (planted.x - curX),
-    rootRest.y + (planted.y - curY),
-  );
+  thighName: string,
+): { x: number; y: number } | null {
+  const thigh = armature.bones.get(thighName);
+  if (!thigh) return null;
+  return bonePointInSpace(thigh, armature.space, 0, 0);
 }
 
 /**
- * World-угол бедра (°), при котором при shin.local = shinFlexDeg
- * таз визуально над стопами: лодыжка чуть сзади бедра (hip forward of tip),
- * колено впереди. Горизонтальное бедро (~0°) даёт sit-back — не используем.
- *
- * tipBiasX < 0 → ankle tip behind hip in bone-space → after plantFeetAt
- * hip sits slightly ahead of ankle tip (компенсирует butt mesh / sole overhang).
+ * 2-bone IK в space: бедро+голень тянут tip к target.
+ * Выбираем решение с коленом дальше в +X (вперёд к сопернику).
+ * root.rotation ≈ 0 → thigh.local = world-in-space angle.
  */
-function stackedThighWorldDeg(
+function solveLegIkToAnkle(
+  hip: { x: number; y: number },
+  target: { x: number; y: number },
   thighLen: number,
   shinLen: number,
-  shinFlexDeg: number,
-  tipBiasX = -55,
-): number {
-  const phi = Phaser.Math.DegToRad(shinFlexDeg);
-  let bestDeg = 50;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (let deg = 20; deg <= 80; deg += 1) {
-    const th = Phaser.Math.DegToRad(deg);
-    const ankleX = thighLen * Math.cos(th) + shinLen * Math.cos(th + phi);
-    const kneeX = thighLen * Math.cos(th);
-    const score = Math.abs(ankleX - tipBiasX) + (kneeX > 55 ? 0 : 400);
-    if (score < bestScore) {
-      bestScore = score;
-      bestDeg = deg;
+): { thighRad: number; shinLocalRad: number } | null {
+  const dx = target.x - hip.x;
+  const dy = target.y - hip.y;
+  let dist = Math.hypot(dx, dy);
+  const maxReach = thighLen + shinLen - 0.5;
+  const minReach = Math.abs(thighLen - shinLen) + 0.5;
+  if (dist < 1e-3) return null;
+  dist = Phaser.Math.Clamp(dist, minReach, maxReach);
+
+  const angleToTarget = Math.atan2(dy, dx);
+  const cosA = (thighLen * thighLen + dist * dist - shinLen * shinLen) / (2 * thighLen * dist);
+  const a = Math.acos(Phaser.Math.Clamp(cosA, -1, 1));
+
+  let best:
+    | { thighRad: number; shinLocalRad: number; kneeX: number }
+    | null = null;
+  for (const thighRad of [angleToTarget - a, angleToTarget + a]) {
+    const kneeX = hip.x + thighLen * Math.cos(thighRad);
+    const kneeY = hip.y + thighLen * Math.sin(thighRad);
+    const shinWorld = Math.atan2(target.y - kneeY, target.x - kneeX);
+    const shinLocalRad = shinWorld - thighRad;
+    if (!best || kneeX > best.kneeX) {
+      best = { thighRad, shinLocalRad, kneeX };
     }
   }
-  return bestDeg;
+  return best ? { thighRad: best.thighRad, shinLocalRad: best.shinLocalRad } : null;
 }
 
-/** Общие углы idle/freeze: L-сгиб + таз над стопами + lean вперёд. */
-function classicSquatAngles(
-  leftThighRest: BoneRest,
-  rightThighRest: BoneRest,
-  bodyRest: BoneRest,
-  shinFlexDeg: number,
-): {
-  leftThigh: number;
-  rightThigh: number;
-  leftShin: number;
-  rightShin: number;
-  torso: number;
-} {
-  const leftWorld = stackedThighWorldDeg(
-    BONE_LENGTH.Левая_нога,
-    BONE_LENGTH.леваяГолень,
-    shinFlexDeg,
-  );
-  const rightWorld = stackedThighWorldDeg(
-    BONE_LENGTH.ПраваяНога,
-    BONE_LENGTH.право_голень,
-    shinFlexDeg,
-  );
-  return {
-    leftThigh: leftWorld,
-    rightThigh: rightWorld,
-    leftShin: shinFlexDeg,
-    rightShin: shinFlexDeg,
-    // +26° от rest (−90°↑): clock-wise к сопернику = lean вперёд (читаемый).
-    torso: bodyRest.angle + 26,
-  };
+/**
+ * IK с учётом rest-смещения голени (sx,sy): бедро направлено к rest-shin,
+ * shin.local доводит tip до planted target.
+ */
+function ikLegToPlanted(
+  armature: GladiatorArmature,
+  thighName: string,
+  shinName: string,
+  planted: { x: number; y: number },
+): void {
+  const thigh = armature.bones.get(thighName);
+  const shin = armature.bones.get(shinName);
+  const shinRest = armature.rest.get(shinName);
+  if (!thigh || !shin || !shinRest) return;
+  const hip = hipInSpace(armature, thighName);
+  if (!hip) return;
+
+  const thighLen = Math.hypot(shinRest.x, shinRest.y);
+  const shinLen = BONE_LENGTH[shinName] ?? 200;
+  const restShinAngle = Math.atan2(shinRest.y, shinRest.x);
+
+  // Решаем IK как будто бедро направлено в restShinAngle local;
+  // thigh.rotation = solvedDir - restShinAngle.
+  const solved = solveLegIkToAnkle(hip, planted, thighLen, shinLen);
+  if (!solved) return;
+  thigh.rotation = solved.thighRad - restShinAngle;
+  // shin.local: world shin dir relative to thigh world (= thigh.rotation)
+  // solveLeg returns shinLocal relative to thighLen-axis (= solved.thighRad).
+  // Actual shin bone +X at thigh.rotation; tip along +X by shinLen.
+  // Knee is at R(thigh.rot)*restShin = direction solved.thighRad.
+  // Shin world should be solved.thighRad + solved.shinLocalRad.
+  // shin.local = shinWorld - thigh.rotation
+  //            = solved.thighRad + solved.shinLocalRad - (solved.thighRad - restShinAngle)
+  //            = solved.shinLocalRad + restShinAngle
+  shin.rotation = solved.shinLocalRad + restShinAngle;
+}
+
+/**
+ * Фиксирует ОБЕ стопы на individual planted targets (не только mid).
+ * Root → mid-hip над mid-feet; per-leg IK; затем дожимаем residual root-ом.
+ */
+function plantBothFeetIk(
+  armature: GladiatorArmature,
+  rootBone: Phaser.GameObjects.Container,
+  _rootRest: BoneRest,
+  plantedLeft: { x: number; y: number },
+  plantedRight: { x: number; y: number },
+  targetMidHipY: number,
+  hipForwardBiasX = 22,
+): void {
+  const midPlantX = (plantedLeft.x + plantedRight.x) * 0.5;
+
+  for (let pass = 0; pass < 4; pass++) {
+    const lHip = hipInSpace(armature, 'Левая_нога');
+    const rHip = hipInSpace(armature, 'ПраваяНога');
+    if (!lHip || !rHip) return;
+    const midHipX = (lHip.x + rHip.x) * 0.5;
+    const midHipY = (lHip.y + rHip.y) * 0.5;
+    rootBone.setPosition(
+      rootBone.x + (midPlantX + hipForwardBiasX - midHipX),
+      rootBone.y + (targetMidHipY - midHipY),
+    );
+
+    ikLegToPlanted(armature, 'Левая_нога', 'леваяГолень', plantedLeft);
+    ikLegToPlanted(armature, 'ПраваяНога', 'право_голень', plantedRight);
+
+    // Residual mid correction (catches length/matrix drift).
+    const left = ankleInSpace(armature, 'леваяГолень');
+    const right = ankleInSpace(armature, 'право_голень');
+    if (!left || !right) return;
+    const errX = ((plantedLeft.x - left.x) + (plantedRight.x - right.x)) * 0.5;
+    const errY = ((plantedLeft.y - left.y) + (plantedRight.y - right.y)) * 0.5;
+    rootBone.setPosition(rootBone.x + errX, rootBone.y + errY);
+    // Re-IK after residual root nudge so each foot tracks its target.
+    ikLegToPlanted(armature, 'Левая_нога', 'леваяГолень', plantedLeft);
+    ikLegToPlanted(armature, 'ПраваяНога', 'право_голень', plantedRight);
+  }
 }
 
 /** Включить/выключить оверлей костей ног (hip/knee/ankle) в screen/world space. */
@@ -729,6 +774,27 @@ function drawArmatureBoneDebug(armature: GladiatorArmature): void {
   g.clear();
   g.setDepth(10000);
 
+  const spaceWorld = new Phaser.GameObjects.Components.TransformMatrix();
+  armature.space.getWorldTransformMatrix(spaceWorld);
+  const plantedWorld = (
+    p: { x: number; y: number },
+  ): { x: number; y: number } => {
+    const out = new Phaser.Math.Vector2();
+    spaceWorld.transformPoint(p.x, p.y, out);
+    return { x: out.x, y: out.y };
+  };
+
+  // FROZEN plant lines from stand capture (not current ankles).
+  if (armature.plantedAnkles) {
+    for (const p of [armature.plantedAnkles.left, armature.plantedAnkles.right]) {
+      const w = plantedWorld(p);
+      g.lineStyle(2, 0xffee00, 0.95);
+      g.lineBetween(w.x, 0, w.x, 2000);
+      g.fillStyle(0xffee00, 0.35);
+      g.fillCircle(w.x, w.y, 11);
+    }
+  }
+
   const chains: Array<[string, string]> = [
     ['Левая_нога', 'леваяГолень'],
     ['ПраваяНога', 'право_голень'],
@@ -741,10 +807,7 @@ function drawArmatureBoneDebug(armature: GladiatorArmature): void {
     const knee = boneWorldPoint(shin);
     const ankle = boneWorldPoint(shin, BONE_LENGTH[shinName] ?? 200, 0);
 
-    // Vertical plant reference through ankle — hips should sit on/near this line.
-    g.lineStyle(2, 0xffee00, 0.85);
-    g.lineBetween(ankle.x, 0, ankle.x, 2000);
-    // Stack check: hip → ankle
+    // Stack check: hip → current ankle
     g.lineStyle(3, 0xff3355, 0.9);
     g.lineBetween(hip.x, hip.y, ankle.x, ankle.y);
 
@@ -767,9 +830,9 @@ function drawArmatureBoneDebug(armature: GladiatorArmature): void {
 
 /**
  * Заморозить classic stacked squat для proof/debug.
- * shinFlex сохраняет L-сгиб; бёдра — stackedThighWorldDeg (таз над стопами).
+ * Обе стопы — IK к individual planted targets (residual ≈ 0).
  */
-export function freezeExaggeratedSquat(armature: GladiatorArmature, shinFlexDeg = 100): void {
+export function freezeExaggeratedSquat(armature: GladiatorArmature, _shinFlexDeg = 100): void {
   const rootBone = armature.bones.get('root');
   const body = armature.bones.get('тело');
   const leftThigh = armature.bones.get('Левая_нога');
@@ -783,27 +846,33 @@ export function freezeExaggeratedSquat(armature: GladiatorArmature, shinFlexDeg 
   if (!rootBone || !body || !leftThigh || !rightThigh || !leftShin || !rightShin) return;
   if (!rootRest || !bodyRest || !leftThighRest || !rightThighRest) return;
 
-  // Planted = лодыжки в rest (прямые ноги).
   rootBone.setPosition(rootRest.x, rootRest.y);
   leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
   rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
   leftShin.rotation = 0;
   rightShin.rotation = 0;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle);
   const plantedLeft = ankleInSpace(armature, 'леваяГолень');
   const plantedRight = ankleInSpace(armature, 'право_голень');
-  if (!plantedLeft || !plantedRight) return;
-  const planted = {
-    x: (plantedLeft.x + plantedRight.x) * 0.5,
-    y: (plantedLeft.y + plantedRight.y) * 0.5,
-  };
+  const standLHip = hipInSpace(armature, 'Левая_нога');
+  const standRHip = hipInSpace(armature, 'ПраваяНога');
+  if (!plantedLeft || !plantedRight || !standLHip || !standRHip) return;
+  armature.plantedAnkles = { left: plantedLeft, right: plantedRight };
 
-  const squat = classicSquatAngles(leftThighRest, rightThighRest, bodyRest, shinFlexDeg);
-  leftThigh.rotation = Phaser.Math.DegToRad(squat.leftThigh);
-  rightThigh.rotation = Phaser.Math.DegToRad(squat.rightThigh);
-  leftShin.rotation = Phaser.Math.DegToRad(squat.leftShin);
-  rightShin.rotation = Phaser.Math.DegToRad(squat.rightShin);
-  body.rotation = Phaser.Math.DegToRad(squat.torso);
-  plantFeetAt(armature, rootBone, rootRest, planted);
+  const standMidHipY = (standLHip.y + standRHip.y) * 0.5;
+  // Dip hips for readable squat while feet stay planted via IK.
+  const SQUAT_HIP_DIP = 160;
+  const TORSO_LEAN_DEG = 26;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle + TORSO_LEAN_DEG);
+  plantBothFeetIk(
+    armature,
+    rootBone,
+    rootRest,
+    plantedLeft,
+    plantedRight,
+    standMidHipY + SQUAT_HIP_DIP,
+    22,
+  );
   syncArmatureDisplays(armature);
   if (armature.boneDebug) drawArmatureBoneDebug(armature);
 }
@@ -820,13 +889,11 @@ function stopIdleSpring(
 }
 
 /**
- * Idle squat ↔ rise (classic fixed-foot, hips stacked over feet).
+ * Idle squat ↔ rise: fixed-foot via per-ankle 2-bone IK.
  *
- * - shin.local ≈ +85° → задний угол ~95° (принятый L-сгиб)
- * - thigh world ≈ stackedThighWorldDeg (~45–55°) → колени вперёд, таз над стопами
- *   (НЕ горизонтальные бёдра — они дают sit-back butt behind heels)
- * - torso lean +20°
- * - plantFeetAt каждый кадр: лодыжки на planted, без выезда стоп
+ * Tween only squatT (0=stand, 1=squat) + torso lean.
+ * Each frame: place hips over planted mid-feet at lerped height, IK both
+ * legs to individual stand ankle targets → per-foot residual ≈ 0.
  */
 export function startIdleSpring(
   scene: Phaser.Scene,
@@ -856,10 +923,10 @@ export function startIdleSpring(
     epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
   );
 
-  // 100° local → задний угол ~80°, глубже dip при stacked бёдрах; L читается.
-  const SHIN_FLEX_DEG = 100;
+  const TORSO_LEAN_DEG = 26;
+  const SQUAT_HIP_DIP = 160;
 
-  // Planted ankles: rest/straight pose (до любого squat-offset).
+  // Capture individual planted ankles + stand hip height at rest.
   rootBone.setPosition(rootRest.x, rootRest.y);
   leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
   rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
@@ -868,57 +935,49 @@ export function startIdleSpring(
   body.rotation = Phaser.Math.DegToRad(bodyRest.angle);
   const plantedLeft = ankleInSpace(armature, 'леваяГолень');
   const plantedRight = ankleInSpace(armature, 'право_голень');
-  if (!plantedLeft || !plantedRight) return;
-  const planted = {
-    x: (plantedLeft.x + plantedRight.x) * 0.5,
-    y: (plantedLeft.y + plantedRight.y) * 0.5,
-  };
+  const standLHip = hipInSpace(armature, 'Левая_нога');
+  const standRHip = hipInSpace(armature, 'ПраваяНога');
+  if (!plantedLeft || !plantedRight || !standLHip || !standRHip) return;
+  armature.plantedAnkles = { left: { ...plantedLeft }, right: { ...plantedRight } };
+  const standMidHipY = (standLHip.y + standRHip.y) * 0.5;
 
-  const pose = {
-    leftThigh: leftThighRest.angle,
-    rightThigh: rightThighRest.angle,
-    leftShin: 0,
-    rightShin: 0,
-    torso: bodyRest.angle,
-  };
+  const pose = { squatT: 0, torso: bodyRest.angle };
   armature.idleProxies.push(pose);
 
-  const straight = {
-    leftThigh: leftThighRest.angle,
-    rightThigh: rightThighRest.angle,
-    leftShin: 0,
-    rightShin: 0,
-    torso: bodyRest.angle,
-  };
-  const squat = classicSquatAngles(
-    leftThighRest,
-    rightThighRest,
-    bodyRest,
-    SHIN_FLEX_DEG,
-  );
-
   const applyPose = (): void => {
-    leftThigh.rotation = Phaser.Math.DegToRad(pose.leftThigh);
-    rightThigh.rotation = Phaser.Math.DegToRad(pose.rightThigh);
-    leftShin.rotation = Phaser.Math.DegToRad(pose.leftShin);
-    rightShin.rotation = Phaser.Math.DegToRad(pose.rightShin);
     body.rotation = Phaser.Math.DegToRad(pose.torso);
-    plantFeetAt(armature, rootBone, rootRest, planted);
+    const hipY = standMidHipY + SQUAT_HIP_DIP * pose.squatT;
+    // Seed root near rest before IK placement (first pass uses current).
+    if (pose.squatT < 0.001) {
+      rootBone.setPosition(rootRest.x, rootRest.y);
+      leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+      rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+      leftShin.rotation = 0;
+      rightShin.rotation = 0;
+    }
+    plantBothFeetIk(
+      armature,
+      rootBone,
+      rootRest,
+      plantedLeft,
+      plantedRight,
+      hipY,
+      22,
+    );
+    if (armature.boneDebug) drawArmatureBoneDebug(armature);
   };
 
   const tweenPose = (
-    to: typeof straight,
+    squatT: number,
+    torso: number,
     duration: number,
     ease: string,
     onComplete?: () => void,
   ): void => {
     scene.tweens.add({
       targets: pose,
-      leftThigh: to.leftThigh,
-      rightThigh: to.rightThigh,
-      leftShin: to.leftShin,
-      rightShin: to.rightShin,
-      torso: to.torso,
+      squatT,
+      torso,
       duration,
       ease,
       onUpdate: applyPose,
@@ -931,10 +990,10 @@ export function startIdleSpring(
 
   const runSquatCycle = (): void => {
     if (!stillIdle()) return;
-    tweenPose(squat, 720, 'Sine.InOut', () => {
+    tweenPose(1, bodyRest.angle + TORSO_LEAN_DEG, 720, 'Sine.InOut', () => {
       scene.time.delayedCall(700, () => {
         if (!stillIdle()) return;
-        tweenPose(straight, 640, 'Sine.Out', () => {
+        tweenPose(0, bodyRest.angle, 640, 'Sine.Out', () => {
           scene.time.delayedCall(180, () => {
             if (stillIdle()) runSquatCycle();
           });
@@ -944,7 +1003,7 @@ export function startIdleSpring(
   };
 
   applyPose();
-  tweenPose(straight, 160, 'Sine.Out', () => runSquatCycle());
+  tweenPose(0, bodyRest.angle, 160, 'Sine.Out', () => runSquatCycle());
 }
 
 export function stopArmatureAnimation(

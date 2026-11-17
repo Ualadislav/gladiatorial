@@ -1096,5 +1096,6 @@ export function createArena(
   ]) {
     game.events.on(event, (value: unknown) => onEvent(event, value));
   }
+
   return game;
 }
