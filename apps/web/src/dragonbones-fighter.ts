@@ -529,9 +529,9 @@ function stopIdleSpring(
 }
 
 /**
- * Лёгкий cartoon-idle: пружинный вес вниз → Back.Out вверх,
- * плюс дыхание корпуса/головы и мягкий сдвиг веса.
- * Амплитуды в bone-space (scale ~0.135 → заметно, но не цирк).
+ * Лёгкий cartoon-idle без подпрыгивания:
+ * пружина через сгиб колен (бедро + голень), плюс тихое дыхание корпуса.
+ * Root X/Y не трогаем — иначе получается hop.
  */
 export function startIdleSpring(
   scene: Phaser.Scene,
@@ -542,82 +542,139 @@ export function startIdleSpring(
   armature.idling = true;
   const epoch = armature.idleEpoch;
 
-  const rootBone = armature.bones.get('root');
   const body = armature.bones.get('тело');
   const head = armature.bones.get('голова');
   const leftShoulder = armature.bones.get('лево_плечо');
   const rightShoulder = armature.bones.get('право_плечо');
-  const rootRest = armature.rest.get('root');
+  const leftThigh = armature.bones.get('Левая_нога');
+  const rightThigh = armature.bones.get('ПраваяНога');
+  const leftShin = armature.bones.get('леваяГолень');
+  const rightShin = armature.bones.get('право_голень');
+
   const bodyRest = armature.rest.get('тело');
   const headRest = armature.rest.get('голова');
-  const leftRest = armature.rest.get('лево_плечо');
-  const rightRest = armature.rest.get('право_плечо');
-  if (!rootBone || !rootRest || !body || !bodyRest) return;
+  const leftShoulderRest = armature.rest.get('лево_плечо');
+  const rightShoulderRest = armature.rest.get('право_плечо');
+  const leftThighRest = armature.rest.get('Левая_нога');
+  const rightThighRest = armature.rest.get('ПраваяНога');
+  const leftShinRest = armature.rest.get('леваяГолень');
+  const rightShinRest = armature.rest.get('право_голень');
+  if (!body || !bodyRest) return;
 
   const stillIdle = (): boolean => (
     epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
   );
 
-  // Вертикальный пружинный подскок + лёгкий боковой weight-shift.
-  const bounce: Record<string, number> = { y: rootBone.y, x: rootBone.x };
-  armature.idleProxies.push(bounce);
+  /** Малый сгиб колена: бедро +deg, голень −deg (ступни остаются у земли). */
+  const THIGH_FLEX = 5.2;
+  const SHIN_FLEX = -4.4;
+  const THIGH_OVERSHOOT = -1.1;
+  const SHIN_OVERSHOOT = 0.9;
 
-  const applyBounce = (): void => {
-    rootBone.setY(bounce.y);
-    rootBone.setX(bounce.x);
+  type KneeTrack = {
+    thigh: Phaser.GameObjects.Container;
+    shin: Phaser.GameObjects.Container;
+    thighRest: number;
+    shinRest: number;
+    state: Record<string, number>;
   };
 
-  const runBounceCycle = (): void => {
-    if (!stillIdle()) return;
-    // 1) Сжатие в землю (вес). ~0.135 scale → заметный подскок без цирка.
-    scene.tweens.add({
-      targets: bounce,
-      y: rootRest.y + 110,
-      x: rootRest.x + 22,
-      duration: 360,
-      ease: 'Sine.In',
-      onUpdate: applyBounce,
-      onComplete: () => {
-        if (!stillIdle()) return;
-        // 2) Отпружинивание вверх с лёгким overshoot.
-        scene.tweens.add({
-          targets: bounce,
-          y: rootRest.y - 55,
-          x: rootRest.x - 18,
-          duration: 480,
-          ease: 'Back.Out',
-          onUpdate: applyBounce,
-          onComplete: () => {
-            if (!stillIdle()) return;
-            // 3) Мягкая посадка в нейтраль, затем цикл снова.
-            scene.tweens.add({
-              targets: bounce,
-              y: rootRest.y,
-              x: rootRest.x,
-              duration: 320,
-              ease: 'Sine.Out',
-              onUpdate: applyBounce,
-              onComplete: () => {
-                if (!stillIdle()) return;
-                scene.time.delayedCall(60, () => {
-                  if (stillIdle()) runBounceCycle();
-                });
-              },
-            });
-          },
-        });
+  const knees: KneeTrack[] = [];
+  if (leftThigh && leftShin && leftThighRest && leftShinRest) {
+    knees.push({
+      thigh: leftThigh,
+      shin: leftShin,
+      thighRest: leftThighRest.angle,
+      shinRest: leftShinRest.angle,
+      state: {
+        thigh: Phaser.Math.RadToDeg(leftThigh.rotation),
+        shin: Phaser.Math.RadToDeg(leftShin.rotation),
       },
     });
-  };
-  runBounceCycle();
+  }
+  if (rightThigh && rightShin && rightThighRest && rightShinRest) {
+    knees.push({
+      thigh: rightThigh,
+      shin: rightShin,
+      thighRest: rightThighRest.angle,
+      shinRest: rightShinRest.angle,
+      state: {
+        thigh: Phaser.Math.RadToDeg(rightThigh.rotation),
+        shin: Phaser.Math.RadToDeg(rightShin.rotation),
+      },
+    });
+  }
 
-  // Дыхание корпуса — фаза чуть сдвинута относительно пружины.
+  for (const knee of knees) armature.idleProxies.push(knee.state);
+
+  const applyKnees = (): void => {
+    for (const knee of knees) {
+      knee.thigh.rotation = Phaser.Math.DegToRad(knee.state.thigh);
+      knee.shin.rotation = Phaser.Math.DegToRad(knee.state.shin);
+    }
+  };
+
+  const runKneeSpring = (): void => {
+    if (!stillIdle() || knees.length === 0) return;
+    // 1) Сжатие — вес в колени.
+    for (const knee of knees) {
+      scene.tweens.add({
+        targets: knee.state,
+        thigh: knee.thighRest + THIGH_FLEX,
+        shin: knee.shinRest + SHIN_FLEX,
+        duration: 480,
+        ease: 'Sine.InOut',
+        onUpdate: applyKnees,
+      });
+    }
+    scene.time.delayedCall(480, () => {
+      if (!stillIdle()) return;
+      // 2) Разгибание с крошечным пружинным overshoot (без root hop).
+      let pending = knees.length;
+      for (const knee of knees) {
+        scene.tweens.add({
+          targets: knee.state,
+          thigh: knee.thighRest + THIGH_OVERSHOOT,
+          shin: knee.shinRest + SHIN_OVERSHOOT,
+          duration: 420,
+          ease: 'Back.Out',
+          onUpdate: applyKnees,
+          onComplete: () => {
+            pending -= 1;
+            if (pending > 0 || !stillIdle()) return;
+            // 3) Мягко в нейтраль.
+            let settleLeft = knees.length;
+            for (const knee of knees) {
+              scene.tweens.add({
+                targets: knee.state,
+                thigh: knee.thighRest,
+                shin: knee.shinRest,
+                duration: 260,
+                ease: 'Sine.Out',
+                onUpdate: applyKnees,
+                onComplete: () => {
+                  settleLeft -= 1;
+                  if (settleLeft > 0 || !stillIdle()) return;
+                  scene.time.delayedCall(90, () => {
+                    if (stillIdle()) runKneeSpring();
+                  });
+                },
+              });
+            }
+          },
+        });
+      }
+    });
+  };
+  if (knees.length) runKneeSpring();
+
+  // Тихое дыхание корпуса (меньше, чем раньше — без «качания»).
   const torso: Record<string, number> = { deg: Phaser.Math.RadToDeg(body.rotation) };
   armature.idleProxies.push(torso);
   scene.tweens.add({
     targets: torso,
-    deg: bodyRest.angle + 3.4,
-    duration: 900,
+    deg: bodyRest.angle + 1.4,
+    duration: 1100,
     ease: 'Sine.InOut',
     yoyo: true,
     repeat: -1,
@@ -632,12 +689,12 @@ export function startIdleSpring(
     armature.idleProxies.push(nod);
     scene.tweens.add({
       targets: nod,
-      deg: headRest.angle - 2.4,
-      duration: 900,
+      deg: headRest.angle - 1.0,
+      duration: 1100,
       ease: 'Sine.InOut',
       yoyo: true,
       repeat: -1,
-      delay: 120,
+      delay: 140,
       onUpdate: () => {
         if (!stillIdle()) return;
         head.rotation = Phaser.Math.DegToRad(nod.deg);
@@ -645,35 +702,34 @@ export function startIdleSpring(
     });
   }
 
-  // Плечи чуть «дышат» — мультяшный живой силуэт.
-  if (leftShoulder && leftRest) {
+  if (leftShoulder && leftShoulderRest) {
     const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(leftShoulder.rotation) };
     armature.idleProxies.push(sway);
     scene.tweens.add({
       targets: sway,
-      deg: leftRest.angle - 3.6,
-      duration: 1050,
+      deg: leftShoulderRest.angle - 1.8,
+      duration: 1200,
       ease: 'Sine.InOut',
       yoyo: true,
       repeat: -1,
-      delay: 60,
+      delay: 80,
       onUpdate: () => {
         if (!stillIdle()) return;
         leftShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
       },
     });
   }
-  if (rightShoulder && rightRest) {
+  if (rightShoulder && rightShoulderRest) {
     const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(rightShoulder.rotation) };
     armature.idleProxies.push(sway);
     scene.tweens.add({
       targets: sway,
-      deg: rightRest.angle + 3.0,
-      duration: 1050,
+      deg: rightShoulderRest.angle + 1.5,
+      duration: 1200,
       ease: 'Sine.InOut',
       yoyo: true,
       repeat: -1,
-      delay: 180,
+      delay: 200,
       onUpdate: () => {
         if (!stillIdle()) return;
         rightShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
