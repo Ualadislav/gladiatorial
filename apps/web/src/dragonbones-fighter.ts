@@ -250,10 +250,15 @@ export type GladiatorArmature = {
   slots: SlotBinding[];
   rest: Map<string, BoneRest>;
   tweenProxies: Array<Record<string, number>>;
+  /** Отдельные proxy пружинного idle — не смешиваем с боевыми твинами. */
+  idleProxies: Array<Record<string, number>>;
   /** Растёт при старте/стопе анимации — отменяет отложенный impact. */
   actionEpoch: number;
+  /** Растёт при стопе idle — отменяет отложенные циклы дыхания. */
+  idleEpoch: number;
   impactTimer: Phaser.Time.TimerEvent | null;
   playing: boolean;
+  idling: boolean;
 };
 
 export function ensureGladiatorPartsLoaded(
@@ -488,9 +493,12 @@ export function createGladiatorArmature(
     slots,
     rest,
     tweenProxies: [],
+    idleProxies: [],
     actionEpoch: 0,
+    idleEpoch: 0,
     impactTimer: null,
     playing: false,
+    idling: false,
   };
 
   syncArmatureDisplays(armature);
@@ -503,13 +511,183 @@ export function createGladiatorArmature(
   root.setData('homeX', x);
   root.setData('homeY', y);
 
+  // Пружинный idle сразу после сборки — бойцы «живые» ещё до первого удара.
+  startIdleSpring(scene, armature);
+
   return armature;
+}
+
+/** Останавливает idle, оставляя кости в текущей позе (для blend в атаку/блок). */
+function stopIdleSpring(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+): void {
+  armature.idleEpoch += 1;
+  armature.idling = false;
+  for (const proxy of armature.idleProxies) scene.tweens.killTweensOf(proxy);
+  armature.idleProxies = [];
+}
+
+/**
+ * Лёгкий cartoon-idle: пружинный вес вниз → Back.Out вверх,
+ * плюс дыхание корпуса/головы и мягкий сдвиг веса.
+ * Амплитуды в bone-space (scale ~0.135 → заметно, но не цирк).
+ */
+export function startIdleSpring(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+): void {
+  if (!armature.root.active || armature.playing || armature.idling) return;
+  stopIdleSpring(scene, armature);
+  armature.idling = true;
+  const epoch = armature.idleEpoch;
+
+  const rootBone = armature.bones.get('root');
+  const body = armature.bones.get('тело');
+  const head = armature.bones.get('голова');
+  const leftShoulder = armature.bones.get('лево_плечо');
+  const rightShoulder = armature.bones.get('право_плечо');
+  const rootRest = armature.rest.get('root');
+  const bodyRest = armature.rest.get('тело');
+  const headRest = armature.rest.get('голова');
+  const leftRest = armature.rest.get('лево_плечо');
+  const rightRest = armature.rest.get('право_плечо');
+  if (!rootBone || !rootRest || !body || !bodyRest) return;
+
+  const stillIdle = (): boolean => (
+    epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
+  );
+
+  // Вертикальный пружинный подскок + лёгкий боковой weight-shift.
+  const bounce: Record<string, number> = { y: rootBone.y, x: rootBone.x };
+  armature.idleProxies.push(bounce);
+
+  const applyBounce = (): void => {
+    rootBone.setY(bounce.y);
+    rootBone.setX(bounce.x);
+  };
+
+  const runBounceCycle = (): void => {
+    if (!stillIdle()) return;
+    // 1) Сжатие в землю (вес). ~0.135 scale → заметный подскок без цирка.
+    scene.tweens.add({
+      targets: bounce,
+      y: rootRest.y + 110,
+      x: rootRest.x + 22,
+      duration: 360,
+      ease: 'Sine.In',
+      onUpdate: applyBounce,
+      onComplete: () => {
+        if (!stillIdle()) return;
+        // 2) Отпружинивание вверх с лёгким overshoot.
+        scene.tweens.add({
+          targets: bounce,
+          y: rootRest.y - 55,
+          x: rootRest.x - 18,
+          duration: 480,
+          ease: 'Back.Out',
+          onUpdate: applyBounce,
+          onComplete: () => {
+            if (!stillIdle()) return;
+            // 3) Мягкая посадка в нейтраль, затем цикл снова.
+            scene.tweens.add({
+              targets: bounce,
+              y: rootRest.y,
+              x: rootRest.x,
+              duration: 320,
+              ease: 'Sine.Out',
+              onUpdate: applyBounce,
+              onComplete: () => {
+                if (!stillIdle()) return;
+                scene.time.delayedCall(60, () => {
+                  if (stillIdle()) runBounceCycle();
+                });
+              },
+            });
+          },
+        });
+      },
+    });
+  };
+  runBounceCycle();
+
+  // Дыхание корпуса — фаза чуть сдвинута относительно пружины.
+  const torso: Record<string, number> = { deg: Phaser.Math.RadToDeg(body.rotation) };
+  armature.idleProxies.push(torso);
+  scene.tweens.add({
+    targets: torso,
+    deg: bodyRest.angle + 3.4,
+    duration: 900,
+    ease: 'Sine.InOut',
+    yoyo: true,
+    repeat: -1,
+    onUpdate: () => {
+      if (!stillIdle()) return;
+      body.rotation = Phaser.Math.DegToRad(torso.deg);
+    },
+  });
+
+  if (head && headRest) {
+    const nod: Record<string, number> = { deg: Phaser.Math.RadToDeg(head.rotation) };
+    armature.idleProxies.push(nod);
+    scene.tweens.add({
+      targets: nod,
+      deg: headRest.angle - 2.4,
+      duration: 900,
+      ease: 'Sine.InOut',
+      yoyo: true,
+      repeat: -1,
+      delay: 120,
+      onUpdate: () => {
+        if (!stillIdle()) return;
+        head.rotation = Phaser.Math.DegToRad(nod.deg);
+      },
+    });
+  }
+
+  // Плечи чуть «дышат» — мультяшный живой силуэт.
+  if (leftShoulder && leftRest) {
+    const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(leftShoulder.rotation) };
+    armature.idleProxies.push(sway);
+    scene.tweens.add({
+      targets: sway,
+      deg: leftRest.angle - 3.6,
+      duration: 1050,
+      ease: 'Sine.InOut',
+      yoyo: true,
+      repeat: -1,
+      delay: 60,
+      onUpdate: () => {
+        if (!stillIdle()) return;
+        leftShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
+      },
+    });
+  }
+  if (rightShoulder && rightRest) {
+    const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(rightShoulder.rotation) };
+    armature.idleProxies.push(sway);
+    scene.tweens.add({
+      targets: sway,
+      deg: rightRest.angle + 3.0,
+      duration: 1050,
+      ease: 'Sine.InOut',
+      yoyo: true,
+      repeat: -1,
+      delay: 180,
+      onUpdate: () => {
+        if (!stillIdle()) return;
+        rightShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
+      },
+    });
+  }
 }
 
 export function stopArmatureAnimation(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
 ): void {
+  // Сначала гасим idle, не сбрасывая позу — атака/блок блендятся из текущего дыхания.
+  stopIdleSpring(scene, armature);
   for (const bone of armature.bones.values()) scene.tweens.killTweensOf(bone);
   for (const proxy of armature.tweenProxies) scene.tweens.killTweensOf(proxy);
   armature.tweenProxies = [];
@@ -523,8 +701,10 @@ export function stopArmatureAnimation(
 
 /** Мягкий возврат в rest вместо мгновенного snap (убирает «каменный» обрыв). */
 const SETTLE_MS = 110;
+/** Короткий довод костей, которых нет в боевом клипе, из idle-оффсета в rest. */
+const IDLE_HANDOFF_MS = 100;
 
-/** Обрыв текущей атаки/анимации с плавным возвратом в rest. */
+/** Обрыв текущей атаки/анимации с плавным возвратом в rest + idle. */
 export function interruptArmature(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
@@ -542,7 +722,7 @@ export function resetArmaturePose(armature: GladiatorArmature): void {
   syncArmatureDisplays(armature);
 }
 
-/** Плавный довод костей к rest-позе (Cubic.Out). */
+/** Плавный довод костей к rest-позе (Cubic.Out), затем пружинный idle. */
 function settleArmatureToRest(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
@@ -552,12 +732,20 @@ function settleArmatureToRest(
   const epoch = armature.actionEpoch;
   let pending = 0;
 
+  const finishSettle = (): void => {
+    if (epoch !== armature.actionEpoch) return;
+    resetArmaturePose(armature);
+    onComplete?.();
+    if (epoch === armature.actionEpoch && !armature.playing) {
+      startIdleSpring(scene, armature);
+    }
+  };
+
   const done = (): void => {
     if (epoch !== armature.actionEpoch) return;
     pending -= 1;
     if (pending > 0) return;
-    resetArmaturePose(armature);
-    onComplete?.();
+    finishSettle();
   };
 
   for (const [name, bone] of armature.bones) {
@@ -597,8 +785,7 @@ function settleArmatureToRest(
   }
 
   if (pending === 0) {
-    resetArmaturePose(armature);
-    onComplete?.();
+    finishSettle();
   }
 }
 
@@ -639,7 +826,7 @@ function tweenKeyframes(
   keys: Array<{ time: number; props: Record<string, number> }>,
   onSegmentEnd?: (endedAt: number) => void,
   onTrackDone?: () => void,
-  options: { fromCurrent?: boolean; restAngle?: number } = {},
+  options: { fromCurrent?: boolean; restAngle?: number; handoffEase?: string } = {},
 ): void {
   const play = (index: number): void => {
     const current = keys[index];
@@ -680,12 +867,16 @@ function tweenKeyframes(
       state.y = blendFromPose ? bone.y : (current.props.y ?? bone.y);
       tweenTo.y = next.props.y;
     }
+    // Выход из idle: мягкий Sine.Out, дальше — сегментный combat-easing.
+    const ease = blendFromPose && options.handoffEase
+      ? options.handoffEase
+      : segmentEase(state, tweenTo, options.restAngle);
     armature.tweenProxies.push(state);
     scene.tweens.add({
       targets: state,
       ...tweenTo,
       duration,
-      ease: segmentEase(state, tweenTo, options.restAngle),
+      ease,
       onUpdate: () => {
         if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
         if (state.x !== undefined) bone.setX(state.x);
@@ -698,6 +889,48 @@ function tweenKeyframes(
     });
   };
   play(0);
+}
+
+/** Кости с idle-оффсетом, которых нет в клипе, плавно возвращаем в rest. */
+function handoffIdleOrphansToRest(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  animatedBones: Set<string>,
+): void {
+  for (const [name, bone] of armature.bones) {
+    if (animatedBones.has(name)) continue;
+    const pose = armature.rest.get(name);
+    if (!pose) continue;
+    const curDeg = Phaser.Math.RadToDeg(bone.rotation);
+    const needAngle = Math.abs(curDeg - pose.angle) > 0.15;
+    const needPos = Math.abs(bone.x - pose.x) > 0.3 || Math.abs(bone.y - pose.y) > 0.3;
+    if (!needAngle && !needPos) continue;
+
+    const state: Record<string, number> = {};
+    const tweenTo: Record<string, number> = {};
+    if (needAngle) {
+      state.deg = curDeg;
+      tweenTo.deg = pose.angle;
+    }
+    if (needPos) {
+      state.x = bone.x;
+      state.y = bone.y;
+      tweenTo.x = pose.x;
+      tweenTo.y = pose.y;
+    }
+    armature.tweenProxies.push(state);
+    scene.tweens.add({
+      targets: state,
+      ...tweenTo,
+      duration: IDLE_HANDOFF_MS,
+      ease: 'Sine.Out',
+      onUpdate: () => {
+        if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
+        if (state.x !== undefined) bone.setX(state.x);
+        if (state.y !== undefined) bone.setY(state.y);
+      },
+    });
+  }
 }
 
 export type PlayAnimOptions = {
@@ -714,13 +947,19 @@ export function playArmatureAnimation(
   options: PlayAnimOptions = {},
 ): number {
   const anim = requireAnim(animationName);
+  // stopIdle внутри: поза дыхания сохраняется → fromCurrent блендит в удар/блок.
   stopArmatureAnimation(scene, armature);
-  // Не snap в rest: первый сегмент блендится из текущей позы (плавные отмены/смены).
   const epoch = armature.actionEpoch;
   armature.playing = true;
 
   let pending = 0;
   let impactDone = false;
+  const animatedBones = new Set<string>([
+    ...anim.rotate.keys(),
+    ...anim.translate.keys(),
+  ]);
+  // Кости только из idle (root bounce и т.п.) — мягко в rest, без hard cut.
+  handoffIdleOrphansToRest(scene, armature, animatedBones);
 
   const finishOne = (): void => {
     if (epoch !== armature.actionEpoch) return;
@@ -728,7 +967,7 @@ export function playArmatureAnimation(
     if (pending > 0) return;
     armature.playing = false;
     armature.impactTimer = null;
-    // Короткий settle вместо hard reset — убирает микро-рывок на последнем кадре.
+    // Settle → onComplete → startIdleSpring (внутри settle).
     settleArmatureToRest(scene, armature, 70, () => {
       if (epoch !== armature.actionEpoch) return;
       options.onComplete?.();
@@ -758,7 +997,7 @@ export function playArmatureAnimation(
       keys.map((key) => ({ time: key.time, props: { angle: pose.angle + key.angle } })),
       undefined,
       finishOne,
-      { fromCurrent: true, restAngle: pose.angle },
+      { fromCurrent: true, restAngle: pose.angle, handoffEase: 'Sine.Out' },
     );
   }
 
@@ -777,7 +1016,7 @@ export function playArmatureAnimation(
       })),
       undefined,
       finishOne,
-      { fromCurrent: true },
+      { fromCurrent: true, handoffEase: 'Sine.Out' },
     );
   }
 
@@ -788,6 +1027,7 @@ export function playArmatureAnimation(
       fireImpact();
     }
     options.onComplete?.();
+    startIdleSpring(scene, armature);
   }
 
   return anim.duration * 1000;
