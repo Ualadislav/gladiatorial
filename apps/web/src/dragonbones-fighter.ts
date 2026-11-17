@@ -575,6 +575,58 @@ function boneWorldPoint(
   return { x: out.x, y: out.y };
 }
 
+/** Точка кости в координатах armature.space (для фиксации стоп). */
+function bonePointInSpace(
+  bone: Phaser.GameObjects.Container,
+  space: Phaser.GameObjects.Container,
+  localX = 0,
+  localY = 0,
+): { x: number; y: number } {
+  const world = new Phaser.GameObjects.Components.TransformMatrix();
+  const spaceWorld = new Phaser.GameObjects.Components.TransformMatrix();
+  const inv = new Phaser.GameObjects.Components.TransformMatrix();
+  bone.getWorldTransformMatrix(world);
+  space.getWorldTransformMatrix(spaceWorld);
+  inv.copyFrom(spaceWorld).invert();
+  const tip = new Phaser.Math.Vector2();
+  world.transformPoint(localX, localY, tip);
+  const out = new Phaser.Math.Vector2();
+  inv.transformPoint(tip.x, tip.y, out);
+  return { x: out.x, y: out.y };
+}
+
+function ankleInSpace(
+  armature: GladiatorArmature,
+  shinName: string,
+): { x: number; y: number } | null {
+  const shin = armature.bones.get(shinName);
+  if (!shin) return null;
+  return bonePointInSpace(shin, armature.space, BONE_LENGTH[shinName] ?? 200, 0);
+}
+
+/**
+ * После FK-поворота ног сдвигает root так, чтобы средняя точка лодыжек
+ * осталась на planted (стопы не едут вперёд/вверх).
+ */
+function plantFeetAt(
+  armature: GladiatorArmature,
+  rootBone: Phaser.GameObjects.Container,
+  rootRest: BoneRest,
+  planted: { x: number; y: number },
+): void {
+  // Сначала root в rest — измеряем дрейф лодыжек от чистого FK.
+  rootBone.setPosition(rootRest.x, rootRest.y);
+  const left = ankleInSpace(armature, 'леваяГолень');
+  const right = ankleInSpace(armature, 'право_голень');
+  if (!left || !right) return;
+  const curX = (left.x + right.x) * 0.5;
+  const curY = (left.y + right.y) * 0.5;
+  rootBone.setPosition(
+    rootRest.x + (planted.x - curX),
+    rootRest.y + (planted.y - curY),
+  );
+}
+
 /** Включить/выключить оверлей костей ног (hip/knee/ankle) в screen/world space. */
 export function setArmatureBoneDebug(
   scene: Phaser.Scene,
@@ -646,6 +698,7 @@ function drawArmatureBoneDebug(armature: GladiatorArmature): void {
 /**
  * Заморозить преувеличенный присед для proof/debug.
  * shin ±90°+ → задний угол ≤90° — силуэт ОБЯЗАН сломаться, если pivot верный.
+ * Стопы фиксируются через plantFeetAt (без выезда вперёд).
  */
 export function freezeExaggeratedSquat(armature: GladiatorArmature, shinFlexDeg = 100): void {
   const rootBone = armature.bones.get('root');
@@ -661,13 +714,27 @@ export function freezeExaggeratedSquat(armature: GladiatorArmature, shinFlexDeg 
   if (!rootBone || !body || !leftThigh || !rightThigh || !leftShin || !rightShin) return;
   if (!rootRest || !bodyRest || !leftThighRest || !rightThighRest) return;
 
-  // Классический squat: бёдра почти горизонт, голени вниз, lean, dip.
+  // Planted = лодыжки в rest (прямые ноги).
+  rootBone.setPosition(rootRest.x, rootRest.y);
+  leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+  rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+  leftShin.rotation = 0;
+  rightShin.rotation = 0;
+  const plantedLeft = ankleInSpace(armature, 'леваяГолень');
+  const plantedRight = ankleInSpace(armature, 'право_голень');
+  if (!plantedLeft || !plantedRight) return;
+  const planted = {
+    x: (plantedLeft.x + plantedRight.x) * 0.5,
+    y: (plantedLeft.y + plantedRight.y) * 0.5,
+  };
+
+  // Классический squat: бёдра почти горизонт, голени вниз, lean; root подгоняем под стопы.
   leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle - 90);
   rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle - 85);
   leftShin.rotation = Phaser.Math.DegToRad(shinFlexDeg);
   rightShin.rotation = Phaser.Math.DegToRad(shinFlexDeg);
   body.rotation = Phaser.Math.DegToRad(bodyRest.angle + 15);
-  rootBone.setY(rootRest.y + 420);
+  plantFeetAt(armature, rootBone, rootRest, planted);
   syncArmatureDisplays(armature);
   if (armature.boneDebug) drawArmatureBoneDebug(armature);
 }
@@ -684,18 +751,17 @@ function stopIdleSpring(
 }
 
 /**
- * Idle squat ↔ rise.
+ * Idle squat ↔ rise (classic fixed-foot).
  *
  * Кости (слоты → bone):
  * - бедро: `Левая_нога` ← att `лево_бедро`; `ПраваяНога` ← `право_бедро`
  * - голень: `леваяГолень` ← `лево_голень`; `право_голень` ← `право_голень`
  * Голень — child бедра; shin.local — шарнир колена:
  * - shin.local = 0° → передний угол бедро/голень = 180° (прямо)
- * - shin.local = +80° → задний угол бедро/икра = 100°
- * Бедра в приседе крутим к горизонту «вперёд» (отрицательный delta от rest ~90°↓),
- * чтобы колени вышли из-под щита/торса и силуэт читался как L / ~100°.
- * Тело lean +14°; root.y только вниз (dip), без hop вверх.
- * Ближняя нога в DRAW_ORDER выше щита — иначе сгиб снова прячется.
+ * - shin.local ≈ +85° → задний угол бедро/икра ≈ 95°
+ * Бедра к горизонту вперёд (колени вперёд), lean ~15°.
+ * Root X/Y каждый кадр подгоняется под planted лодыжки — стопы не едут
+ * вперёд относительно фона; таз опускается над стопами.
  */
 export function startIdleSpring(
   scene: Phaser.Scene,
@@ -734,20 +800,32 @@ export function startIdleSpring(
    */
   const LEFT_THIGH_SQUAT = -90;
   const RIGHT_THIGH_SQUAT = -85;
-  /** Опускание таза в bone-space (только вниз от rest — не hop вверх). */
-  const ROOT_DIP_Y = 420;
 
   // Оба голени +flex: при коленях вперёд стопы под таз (не split-V).
   const LEFT_SHIN_SIGN = 1;
   const RIGHT_SHIN_SIGN = 1;
 
+  // Planted ankles: rest/straight pose (до любого squat-offset).
+  rootBone.setPosition(rootRest.x, rootRest.y);
+  leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+  rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+  leftShin.rotation = 0;
+  rightShin.rotation = 0;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle);
+  const plantedLeft = ankleInSpace(armature, 'леваяГолень');
+  const plantedRight = ankleInSpace(armature, 'право_голень');
+  if (!plantedLeft || !plantedRight) return;
+  const planted = {
+    x: (plantedLeft.x + plantedRight.x) * 0.5,
+    y: (plantedLeft.y + plantedRight.y) * 0.5,
+  };
+
   const pose = {
-    leftThigh: Phaser.Math.RadToDeg(leftThigh.rotation),
-    rightThigh: Phaser.Math.RadToDeg(rightThigh.rotation),
-    leftShin: Phaser.Math.RadToDeg(leftShin.rotation),
-    rightShin: Phaser.Math.RadToDeg(rightShin.rotation),
-    torso: Phaser.Math.RadToDeg(body.rotation),
-    rootY: rootBone.y,
+    leftThigh: leftThighRest.angle,
+    rightThigh: rightThighRest.angle,
+    leftShin: 0,
+    rightShin: 0,
+    torso: bodyRest.angle,
   };
   armature.idleProxies.push(pose);
 
@@ -757,7 +835,6 @@ export function startIdleSpring(
     leftShin: 0,
     rightShin: 0,
     torso: bodyRest.angle,
-    rootY: rootRest.y,
   };
   const squat = {
     leftThigh: leftThighRest.angle + LEFT_THIGH_SQUAT,
@@ -765,7 +842,6 @@ export function startIdleSpring(
     leftShin: LEFT_SHIN_SIGN * SHIN_FLEX_DEG,
     rightShin: RIGHT_SHIN_SIGN * SHIN_FLEX_DEG,
     torso: bodyRest.angle + TORSO_LEAN_DEG,
-    rootY: rootRest.y + ROOT_DIP_Y,
   };
 
   const applyPose = (): void => {
@@ -774,7 +850,8 @@ export function startIdleSpring(
     leftShin.rotation = Phaser.Math.DegToRad(pose.leftShin);
     rightShin.rotation = Phaser.Math.DegToRad(pose.rightShin);
     body.rotation = Phaser.Math.DegToRad(pose.torso);
-    rootBone.setY(pose.rootY);
+    // FK сгибает ноги → лодыжки уезжают; root компенсирует, стопы на planted.
+    plantFeetAt(armature, rootBone, rootRest, planted);
   };
 
   const tweenPose = (
@@ -790,7 +867,6 @@ export function startIdleSpring(
       leftShin: to.leftShin,
       rightShin: to.rightShin,
       torso: to.torso,
-      rootY: to.rootY,
       duration,
       ease,
       onUpdate: applyPose,
@@ -803,11 +879,10 @@ export function startIdleSpring(
 
   const runSquatCycle = (): void => {
     if (!stillIdle()) return;
-    // Присед: 180° → ~100° сзади, lean, dip; держим читаемый кадр дольше.
+    // Присед: колени вперёд, стопы fixed; держим читаемый кадр.
     tweenPose(squat, 720, 'Sine.InOut', () => {
       scene.time.delayedCall(700, () => {
         if (!stillIdle()) return;
-        // Подъём без hop-overshoot вверх.
         tweenPose(straight, 640, 'Sine.Out', () => {
           scene.time.delayedCall(180, () => {
             if (stillIdle()) runSquatCycle();
@@ -817,6 +892,7 @@ export function startIdleSpring(
     });
   };
 
+  applyPose();
   tweenPose(straight, 160, 'Sine.Out', () => runSquatCycle());
 }
 
