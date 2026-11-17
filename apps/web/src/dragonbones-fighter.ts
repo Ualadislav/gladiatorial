@@ -2,14 +2,15 @@ import Phaser from 'phaser';
 // dmg_taken = тот же риг, что gladiarot_all, плюс анимация taking_dmg.
 import spineData from '../../../prints/gladiator_hit_animation/dmg_taken/dmg_taken_ske.json';
 import headUrl from '../../../after_PS/голова.png';
-import leftThighUrl from '../../../after_PS/лево_бедро.png';
-import leftShinUrl from '../../../after_PS/лево_голень.png';
+// Thigh/shin cropped at knee pivot so bend silhouette isn't filled by overshoot art.
+import leftThighUrl from '../../../after_PS/leg_crop/лево_бедро.png';
+import leftShinUrl from '../../../after_PS/leg_crop/лево_голень.png';
 import leftFistSwordUrl from '../../../after_PS/лево_кулак_меч.png';
 import leftShoulderUrl from '../../../after_PS/лево_плечо.png';
 import leftForearmUrl from '../../../after_PS/лево_предплечЬе.png';
 import rightFistUrl from '../../../after_PS/право кулак.png';
-import rightThighUrl from '../../../after_PS/право_бедро.png';
-import rightShinUrl from '../../../after_PS/право_голень.png';
+import rightThighUrl from '../../../after_PS/leg_crop/право_бедро.png';
+import rightShinUrl from '../../../after_PS/leg_crop/право_голень.png';
 import rightShoulderUrl from '../../../after_PS/право_плечо.png';
 import rightForearmUrl from '../../../after_PS/предплечъе левое.png';
 import bodyUrl from '../../../after_PS/тело.png';
@@ -261,6 +262,8 @@ export type GladiatorArmature = {
   impactTimer: Phaser.Time.TimerEvent | null;
   playing: boolean;
   idling: boolean;
+  /** Временный оверлей: круги hip/knee/ankle + линии кости. */
+  boneDebug?: Phaser.GameObjects.Graphics;
 };
 
 export function ensureGladiatorPartsLoaded(
@@ -462,16 +465,12 @@ export function createGladiatorArmature(
     });
   }
 
-  // Бедро в ske чуть длиннее кости и перекрывает шарнир: слегка укорачиваем
-  // по оси кости, чтобы сгиб голени читался (право длиннее — сильнее trim).
+  // Ноги чуть уже по поперечнику: толстый оранжевый оверлап заливал угол колена
+  // и силуэт читался как «прямая колбаса», даже когда кости согнуты.
   for (const slot of slots) {
     const key = slot.image.texture.key;
-    if (key.endsWith('право_бедро') || key.includes(':право_бедро')) {
-      slot.localScaleY *= 0.82;
-      slot.localX *= 0.92;
-    } else if (key.endsWith('лево_бедро') || key.includes(':лево_бедро')) {
-      slot.localScaleY *= 0.9;
-      slot.localX *= 0.96;
+    if (key.includes('бедро') || key.includes('голень')) {
+      slot.localScaleX *= 0.72;
     }
   }
 
@@ -538,7 +537,10 @@ export function createGladiatorArmature(
 
   syncArmatureDisplays(armature);
   scene.events.on('update', () => {
-    if (root.active) syncArmatureDisplays(armature);
+    if (root.active) {
+      syncArmatureDisplays(armature);
+      if (armature.boneDebug) drawArmatureBoneDebug(armature);
+    }
   });
 
   const scale = gladiatorRigScale * scaleMul;
@@ -550,6 +552,124 @@ export function createGladiatorArmature(
   startIdleSpring(scene, armature);
 
   return armature;
+}
+
+/** Длины костей из ske — для debug tip (hip→knee→ankle). */
+const BONE_LENGTH: Record<string, number> = {
+  Левая_нога: 258.09,
+  леваяГолень: 207.75,
+  ПраваяНога: 282.46,
+  право_голень: 278.73,
+};
+
+/** World-space точка кости (и tip вдоль local +X length). */
+function boneWorldPoint(
+  bone: Phaser.GameObjects.Container,
+  localX = 0,
+  localY = 0,
+): { x: number; y: number } {
+  const world = new Phaser.GameObjects.Components.TransformMatrix();
+  bone.getWorldTransformMatrix(world);
+  const out = new Phaser.Math.Vector2();
+  world.transformPoint(localX, localY, out);
+  return { x: out.x, y: out.y };
+}
+
+/** Включить/выключить оверлей костей ног (hip/knee/ankle) в screen/world space. */
+export function setArmatureBoneDebug(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  enabled: boolean,
+): void {
+  if (!enabled) {
+    armature.boneDebug?.destroy();
+    armature.boneDebug = undefined;
+    for (const slot of armature.slots) {
+      if (slot.mode) continue;
+      const key = slot.image.texture.key;
+      if (/бедр|голен/.test(key)) slot.image.clearTint();
+    }
+    return;
+  }
+  if (!armature.boneDebug) {
+    // Scene-level graphics (не child space) — координаты = world/camera.
+    const g = scene.add.graphics();
+    g.setDepth(10000);
+    armature.boneDebug = g;
+  }
+  // Replace tint: multiplicative tint on orange art is weak — use additive-ish bright colors
+  // via setTintFill for unmistakable separation.
+  for (const slot of armature.slots) {
+    if (slot.mode) continue;
+    const key = slot.image.texture.key;
+    if (key.includes('бедро')) slot.image.setTintFill(0xff22aa);
+    else if (key.includes('голень')) slot.image.setTintFill(0x00e5ff);
+  }
+  drawArmatureBoneDebug(armature);
+}
+
+function drawArmatureBoneDebug(armature: GladiatorArmature): void {
+  const g = armature.boneDebug;
+  if (!g) return;
+  g.clear();
+  g.setDepth(10000);
+
+  const chains: Array<[string, string]> = [
+    ['Левая_нога', 'леваяГолень'],
+    ['ПраваяНога', 'право_голень'],
+  ];
+  for (const [thighName, shinName] of chains) {
+    const thigh = armature.bones.get(thighName);
+    const shin = armature.bones.get(shinName);
+    if (!thigh || !shin) continue;
+    const hip = boneWorldPoint(thigh);
+    const knee = boneWorldPoint(shin);
+    const ankle = boneWorldPoint(shin, BONE_LENGTH[shinName] ?? 200, 0);
+
+    g.lineStyle(5, 0x22ff66, 1);
+    g.lineBetween(hip.x, hip.y, knee.x, knee.y);
+    g.lineStyle(5, 0x00ddff, 1);
+    g.lineBetween(knee.x, knee.y, ankle.x, ankle.y);
+
+    const dot = (x: number, y: number, color: number, r = 9): void => {
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(x, y, r + 2);
+      g.fillStyle(color, 1);
+      g.fillCircle(x, y, r);
+    };
+    dot(hip.x, hip.y, 0xff2200);
+    dot(knee.x, knee.y, 0xffee00);
+    dot(ankle.x, ankle.y, 0x2266ff);
+  }
+}
+
+/**
+ * Заморозить преувеличенный присед для proof/debug.
+ * shin ±90°+ → задний угол ≤90° — силуэт ОБЯЗАН сломаться, если pivot верный.
+ */
+export function freezeExaggeratedSquat(armature: GladiatorArmature, shinFlexDeg = 100): void {
+  const rootBone = armature.bones.get('root');
+  const body = armature.bones.get('тело');
+  const leftThigh = armature.bones.get('Левая_нога');
+  const rightThigh = armature.bones.get('ПраваяНога');
+  const leftShin = armature.bones.get('леваяГолень');
+  const rightShin = armature.bones.get('право_голень');
+  const rootRest = armature.rest.get('root');
+  const bodyRest = armature.rest.get('тело');
+  const leftThighRest = armature.rest.get('Левая_нога');
+  const rightThighRest = armature.rest.get('ПраваяНога');
+  if (!rootBone || !body || !leftThigh || !rightThigh || !leftShin || !rightShin) return;
+  if (!rootRest || !bodyRest || !leftThighRest || !rightThighRest) return;
+
+  // Классический squat: бёдра почти горизонт, голени вниз, lean, dip.
+  leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle - 90);
+  rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle - 85);
+  leftShin.rotation = Phaser.Math.DegToRad(shinFlexDeg);
+  rightShin.rotation = Phaser.Math.DegToRad(shinFlexDeg);
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle + 15);
+  rootBone.setY(rootRest.y + 420);
+  syncArmatureDisplays(armature);
+  if (armature.boneDebug) drawArmatureBoneDebug(armature);
 }
 
 /** Останавливает idle, оставляя кости в текущей позе (для blend в атаку/блок). */
@@ -605,19 +725,19 @@ export function startIdleSpring(
     epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
   );
 
-  const KNEE_REAR_BENT_DEG = 100;
-  const SHIN_FLEX_DEG = 180 - KNEE_REAR_BENT_DEG; // 80°
-  const TORSO_LEAN_DEG = 14;
+  // Задний угол ~100°: shin local 80°. Чуть глубже (85) — читаемее на толстом арте.
+  const SHIN_FLEX_DEG = 85;
+  const TORSO_LEAN_DEG = 15;
   /**
-   * Rest бёдер ~79–94° (вниз). Отрицательный delta → колени вперёд к сопернику,
-   * бедро ближе к горизонту, голень +80° даёт читаемый L (~100° сзади).
+   * Классический squat: бёдра почти горизонтально вперёд, голени вниз.
+   * Rest бёдер ~79–94° (вниз); −90° → бедро ~горизонт.
    */
-  const LEFT_THIGH_SQUAT = -72;
-  const RIGHT_THIGH_SQUAT = -68;
+  const LEFT_THIGH_SQUAT = -90;
+  const RIGHT_THIGH_SQUAT = -85;
   /** Опускание таза в bone-space (только вниз от rest — не hop вверх). */
-  const ROOT_DIP_Y = 380;
+  const ROOT_DIP_Y = 420;
 
-  // Оба голени в одну сторону: при коленях вперёд складывают стопы под таз.
+  // Оба голени +flex: при коленях вперёд стопы под таз (не split-V).
   const LEFT_SHIN_SIGN = 1;
   const RIGHT_SHIN_SIGN = 1;
 
