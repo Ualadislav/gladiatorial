@@ -529,9 +529,14 @@ function stopIdleSpring(
 }
 
 /**
- * Лёгкий cartoon-idle без подпрыгивания:
- * пружина через сгиб колен (бедро + голень), плюс тихое дыхание корпуса.
- * Root X/Y не трогаем — иначе получается hop.
+ * Idle squat ↔ rise (без root hop).
+ *
+ * Маппинг углов (голень — child бедра, local rot вдоль оси кости):
+ * - shin.local = 0°  → кости соосны → угол по ПЕРЕДНЕЙ плоскости бедро/голень = 180° (ноги прямые)
+ * - |shin.local| = 80° → угол по ЗАДНЕЙ плоскости бедро/икра = 180° − 80° = 100° (присед)
+ * - тело lean +12° от rest во время приседа (диапазон 10–15°)
+ * - бедро чуть уходит вперёд (~22°), чтобы силуэт был приседом, а не только «сломаным» коленом
+ * Root X/Y не трогаем.
  */
 export function startIdleSpring(
   scene: Phaser.Scene,
@@ -543,199 +548,107 @@ export function startIdleSpring(
   const epoch = armature.idleEpoch;
 
   const body = armature.bones.get('тело');
-  const head = armature.bones.get('голова');
-  const leftShoulder = armature.bones.get('лево_плечо');
-  const rightShoulder = armature.bones.get('право_плечо');
   const leftThigh = armature.bones.get('Левая_нога');
   const rightThigh = armature.bones.get('ПраваяНога');
   const leftShin = armature.bones.get('леваяГолень');
   const rightShin = armature.bones.get('право_голень');
 
   const bodyRest = armature.rest.get('тело');
-  const headRest = armature.rest.get('голова');
-  const leftShoulderRest = armature.rest.get('лево_плечо');
-  const rightShoulderRest = armature.rest.get('право_плечо');
   const leftThighRest = armature.rest.get('Левая_нога');
   const rightThighRest = armature.rest.get('ПраваяНога');
-  const leftShinRest = armature.rest.get('леваяГолень');
-  const rightShinRest = armature.rest.get('право_голень');
   if (!body || !bodyRest) return;
 
   const stillIdle = (): boolean => (
     epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
   );
 
-  /** Малый сгиб колена: бедро +deg, голень −deg (ступни остаются у земли). */
-  const THIGH_FLEX = 5.2;
-  const SHIN_FLEX = -4.4;
-  const THIGH_OVERSHOOT = -1.1;
-  const SHIN_OVERSHOOT = 0.9;
+  /** Задний угол колена в приседе ≈ 100° → сгиб от прямой = 80°. */
+  const KNEE_REAR_BENT_DEG = 100;
+  const SHIN_FLEX_DEG = 180 - KNEE_REAR_BENT_DEG;
+  /** Наклон корпуса вперёд в приседе (середина 10–15°). */
+  const TORSO_LEAN_DEG = 12;
+  /** Доп. поворот бедра вперёд для читаемого squat-силуэта. */
+  const THIGH_SQUAT_DEG = 22;
 
-  type KneeTrack = {
-    thigh: Phaser.GameObjects.Container;
-    shin: Phaser.GameObjects.Container;
-    thighRest: number;
-    shinRest: number;
-    state: Record<string, number>;
+  // Знаки сгиба: левая голень +, правая − (зеркально в этом риге).
+  const leftShinSign = 1;
+  const rightShinSign = -1;
+  // Бедро уходит «вперёд» к сопернику в ту же сторону, что и сгиб колена.
+  const leftThighSign = 1;
+  const rightThighSign = -1;
+  // тело rest ≈ -89°; +lean наклоняет верх вперёд к сопернику (игрок смотрит в +X).
+  const torsoLeanSign = 1;
+
+  const pose = {
+    leftThigh: leftThigh ? Phaser.Math.RadToDeg(leftThigh.rotation) : 0,
+    rightThigh: rightThigh ? Phaser.Math.RadToDeg(rightThigh.rotation) : 0,
+    leftShin: leftShin ? Phaser.Math.RadToDeg(leftShin.rotation) : 0,
+    rightShin: rightShin ? Phaser.Math.RadToDeg(rightShin.rotation) : 0,
+    torso: Phaser.Math.RadToDeg(body.rotation),
+  };
+  armature.idleProxies.push(pose);
+
+  const straight = {
+    leftThigh: leftThighRest?.angle ?? pose.leftThigh,
+    rightThigh: rightThighRest?.angle ?? pose.rightThigh,
+    leftShin: 0,
+    rightShin: 0,
+    torso: bodyRest.angle,
+  };
+  const squat = {
+    leftThigh: straight.leftThigh + leftThighSign * THIGH_SQUAT_DEG,
+    rightThigh: straight.rightThigh + rightThighSign * THIGH_SQUAT_DEG,
+    leftShin: leftShinSign * SHIN_FLEX_DEG,
+    rightShin: rightShinSign * SHIN_FLEX_DEG,
+    torso: bodyRest.angle + torsoLeanSign * TORSO_LEAN_DEG,
   };
 
-  const knees: KneeTrack[] = [];
-  if (leftThigh && leftShin && leftThighRest && leftShinRest) {
-    knees.push({
-      thigh: leftThigh,
-      shin: leftShin,
-      thighRest: leftThighRest.angle,
-      shinRest: leftShinRest.angle,
-      state: {
-        thigh: Phaser.Math.RadToDeg(leftThigh.rotation),
-        shin: Phaser.Math.RadToDeg(leftShin.rotation),
-      },
-    });
-  }
-  if (rightThigh && rightShin && rightThighRest && rightShinRest) {
-    knees.push({
-      thigh: rightThigh,
-      shin: rightShin,
-      thighRest: rightThighRest.angle,
-      shinRest: rightShinRest.angle,
-      state: {
-        thigh: Phaser.Math.RadToDeg(rightThigh.rotation),
-        shin: Phaser.Math.RadToDeg(rightShin.rotation),
-      },
-    });
-  }
-
-  for (const knee of knees) armature.idleProxies.push(knee.state);
-
-  const applyKnees = (): void => {
-    for (const knee of knees) {
-      knee.thigh.rotation = Phaser.Math.DegToRad(knee.state.thigh);
-      knee.shin.rotation = Phaser.Math.DegToRad(knee.state.shin);
-    }
+  const applyPose = (): void => {
+    if (leftThigh) leftThigh.rotation = Phaser.Math.DegToRad(pose.leftThigh);
+    if (rightThigh) rightThigh.rotation = Phaser.Math.DegToRad(pose.rightThigh);
+    if (leftShin) leftShin.rotation = Phaser.Math.DegToRad(pose.leftShin);
+    if (rightShin) rightShin.rotation = Phaser.Math.DegToRad(pose.rightShin);
+    body.rotation = Phaser.Math.DegToRad(pose.torso);
   };
 
-  const runKneeSpring = (): void => {
-    if (!stillIdle() || knees.length === 0) return;
-    // 1) Сжатие — вес в колени.
-    for (const knee of knees) {
-      scene.tweens.add({
-        targets: knee.state,
-        thigh: knee.thighRest + THIGH_FLEX,
-        shin: knee.shinRest + SHIN_FLEX,
-        duration: 480,
-        ease: 'Sine.InOut',
-        onUpdate: applyKnees,
-      });
-    }
-    scene.time.delayedCall(480, () => {
-      if (!stillIdle()) return;
-      // 2) Разгибание с крошечным пружинным overshoot (без root hop).
-      let pending = knees.length;
-      for (const knee of knees) {
-        scene.tweens.add({
-          targets: knee.state,
-          thigh: knee.thighRest + THIGH_OVERSHOOT,
-          shin: knee.shinRest + SHIN_OVERSHOOT,
-          duration: 420,
-          ease: 'Back.Out',
-          onUpdate: applyKnees,
-          onComplete: () => {
-            pending -= 1;
-            if (pending > 0 || !stillIdle()) return;
-            // 3) Мягко в нейтраль.
-            let settleLeft = knees.length;
-            for (const knee of knees) {
-              scene.tweens.add({
-                targets: knee.state,
-                thigh: knee.thighRest,
-                shin: knee.shinRest,
-                duration: 260,
-                ease: 'Sine.Out',
-                onUpdate: applyKnees,
-                onComplete: () => {
-                  settleLeft -= 1;
-                  if (settleLeft > 0 || !stillIdle()) return;
-                  scene.time.delayedCall(90, () => {
-                    if (stillIdle()) runKneeSpring();
-                  });
-                },
-              });
-            }
-          },
+  const tweenPose = (
+    to: typeof straight,
+    duration: number,
+    ease: string,
+    onComplete?: () => void,
+  ): void => {
+    scene.tweens.add({
+      targets: pose,
+      leftThigh: to.leftThigh,
+      rightThigh: to.rightThigh,
+      leftShin: to.leftShin,
+      rightShin: to.rightShin,
+      torso: to.torso,
+      duration,
+      ease,
+      onUpdate: applyPose,
+      onComplete: () => {
+        if (!stillIdle()) return;
+        onComplete?.();
+      },
+    });
+  };
+
+  const runSquatCycle = (): void => {
+    if (!stillIdle()) return;
+    // 1) Присед: 180° → ~100° сзади + наклон корпуса.
+    tweenPose(squat, 620, 'Sine.InOut', () => {
+      // 2) Подъём с лёгкой пружиной в прямые ноги.
+      tweenPose(straight, 580, 'Back.Out', () => {
+        scene.time.delayedCall(120, () => {
+          if (stillIdle()) runSquatCycle();
         });
-      }
+      });
     });
   };
-  if (knees.length) runKneeSpring();
 
-  // Тихое дыхание корпуса (меньше, чем раньше — без «качания»).
-  const torso: Record<string, number> = { deg: Phaser.Math.RadToDeg(body.rotation) };
-  armature.idleProxies.push(torso);
-  scene.tweens.add({
-    targets: torso,
-    deg: bodyRest.angle + 1.4,
-    duration: 1100,
-    ease: 'Sine.InOut',
-    yoyo: true,
-    repeat: -1,
-    onUpdate: () => {
-      if (!stillIdle()) return;
-      body.rotation = Phaser.Math.DegToRad(torso.deg);
-    },
-  });
-
-  if (head && headRest) {
-    const nod: Record<string, number> = { deg: Phaser.Math.RadToDeg(head.rotation) };
-    armature.idleProxies.push(nod);
-    scene.tweens.add({
-      targets: nod,
-      deg: headRest.angle - 1.0,
-      duration: 1100,
-      ease: 'Sine.InOut',
-      yoyo: true,
-      repeat: -1,
-      delay: 140,
-      onUpdate: () => {
-        if (!stillIdle()) return;
-        head.rotation = Phaser.Math.DegToRad(nod.deg);
-      },
-    });
-  }
-
-  if (leftShoulder && leftShoulderRest) {
-    const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(leftShoulder.rotation) };
-    armature.idleProxies.push(sway);
-    scene.tweens.add({
-      targets: sway,
-      deg: leftShoulderRest.angle - 1.8,
-      duration: 1200,
-      ease: 'Sine.InOut',
-      yoyo: true,
-      repeat: -1,
-      delay: 80,
-      onUpdate: () => {
-        if (!stillIdle()) return;
-        leftShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
-      },
-    });
-  }
-  if (rightShoulder && rightShoulderRest) {
-    const sway: Record<string, number> = { deg: Phaser.Math.RadToDeg(rightShoulder.rotation) };
-    armature.idleProxies.push(sway);
-    scene.tweens.add({
-      targets: sway,
-      deg: rightShoulderRest.angle + 1.5,
-      duration: 1200,
-      ease: 'Sine.InOut',
-      yoyo: true,
-      repeat: -1,
-      delay: 200,
-      onUpdate: () => {
-        if (!stillIdle()) return;
-        rightShoulder.rotation = Phaser.Math.DegToRad(sway.deg);
-      },
-    });
-  }
+  // Стартуем из прямых ног (180°), даже если rest чуть согнут.
+  tweenPose(straight, 180, 'Sine.Out', () => runSquatCycle());
 }
 
 export function stopArmatureAnimation(
