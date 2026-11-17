@@ -2,14 +2,15 @@ import Phaser from 'phaser';
 // dmg_taken = тот же риг, что gladiarot_all, плюс анимация taking_dmg.
 import spineData from '../../../prints/gladiator_hit_animation/dmg_taken/dmg_taken_ske.json';
 import headUrl from '../../../after_PS/голова.png';
-import leftThighUrl from '../../../after_PS/лево_бедро.png';
-import leftShinUrl from '../../../after_PS/лево_голень.png';
+// Thigh/shin cropped at knee pivot so bend silhouette isn't filled by overshoot art.
+import leftThighUrl from '../../../after_PS/leg_crop/лево_бедро.png';
+import leftShinUrl from '../../../after_PS/leg_crop/лево_голень.png';
 import leftFistSwordUrl from '../../../after_PS/лево_кулак_меч.png';
 import leftShoulderUrl from '../../../after_PS/лево_плечо.png';
 import leftForearmUrl from '../../../after_PS/лево_предплечЬе.png';
 import rightFistUrl from '../../../after_PS/право кулак.png';
-import rightThighUrl from '../../../after_PS/право_бедро.png';
-import rightShinUrl from '../../../after_PS/право_голень.png';
+import rightThighUrl from '../../../after_PS/leg_crop/право_бедро.png';
+import rightShinUrl from '../../../after_PS/leg_crop/право_голень.png';
 import rightShoulderUrl from '../../../after_PS/право_плечо.png';
 import rightForearmUrl from '../../../after_PS/предплечъе левое.png';
 import bodyUrl from '../../../after_PS/тело.png';
@@ -222,24 +223,26 @@ type SlotBinding = {
 /**
  * Порядок отрисовки (сзади → спереди):
  * рука с мечом и дальняя (левая) нога за корпусом;
- * правая рука без меча — поверх всего.
+ * ближняя (правая) нога ПОВЕРХ щита — иначе щит закрывает колено и
+ * сгиб 180°→100° читается как «прямая палка» из торчащей голени.
  */
 const DRAW_ORDER = [
   // рука с мечом и дальняя нога — строго за корпусом
   'лево_плечо',
   'лево_предплечЬе',
   'лево_кулак_меч',
-  'лево_голень',
+  // бедро ПОД голенью: иначе сгиб колена прячется под спрайтом бедра
   'лево_бедро',
+  'лево_голень',
   'тело',
-  'право_голень',
-  'право_бедро',
   'голова',
-  // правая рука без меча — поверх всего (плечо → предплечье → кулак)
+  // правая рука + щит (щит вставляется кодом перед кулаком)
   'право_плечо',
   'предплечъе левое',
-  // щит вставляется кодом перед кулаком
   'право кулак',
+  // ближняя нога поверх щита — читаемый шарнир колена
+  'право_бедро',
+  'право_голень',
 ] as const;
 
 export type GladiatorArmature = {
@@ -250,10 +253,22 @@ export type GladiatorArmature = {
   slots: SlotBinding[];
   rest: Map<string, BoneRest>;
   tweenProxies: Array<Record<string, number>>;
+  /** Отдельные proxy пружинного idle — не смешиваем с боевыми твинами. */
+  idleProxies: Array<Record<string, number>>;
   /** Растёт при старте/стопе анимации — отменяет отложенный impact. */
   actionEpoch: number;
+  /** Растёт при стопе idle — отменяет отложенные циклы дыхания. */
+  idleEpoch: number;
   impactTimer: Phaser.Time.TimerEvent | null;
   playing: boolean;
+  idling: boolean;
+  /** Временный оверлей: круги hip/knee/ankle + линии кости. */
+  boneDebug?: Phaser.GameObjects.Graphics;
+  /**
+   * Замороженные цели стоп в armature.space (stand capture).
+   * Debug рисует yellow plant lines по ним — не по текущим лодыжкам.
+   */
+  plantedAnkles?: { left: { x: number; y: number }; right: { x: number; y: number } };
 };
 
 export function ensureGladiatorPartsLoaded(
@@ -455,7 +470,17 @@ export function createGladiatorArmature(
     });
   }
 
+  // Ноги чуть уже по поперечнику: толстый оранжевый оверлап заливал угол колена
+  // и силуэт читался как «прямая колбаса», даже когда кости согнуты.
+  for (const slot of slots) {
+    const key = slot.image.texture.key;
+    if (key.includes('бедро') || key.includes('голень')) {
+      slot.localScaleX *= 0.72;
+    }
+  }
+
   // Щит 3/4 — позиция на кулаке, угол с предплечья (плавно с рукой).
+  let shieldImage: Phaser.GameObjects.Image | null = null;
   if (shieldKind) {
     const shieldBone = bones.get('ПравоКулак');
     const forearm = bones.get('ПредплъечьеПраво') ?? shieldBone;
@@ -466,6 +491,7 @@ export function createGladiatorArmature(
     if (tint !== 0xffffff) shield.setTint(tint);
     display.add(shield);
     images.push(shield);
+    shieldImage = shield;
     slots.push({
       image: shield,
       bone: shieldBone,
@@ -480,6 +506,24 @@ export function createGladiatorArmature(
     });
   }
 
+  // display.add(shield) кладёт щит сверху всех слотов — поднимаем порядок заново:
+  // …предплечье → щит → кулак → ближнее бедро → ближняя голень (колено не под щитом).
+  const raisePart = (attachmentName: string): void => {
+    const slot = slots.find(
+      (s) => !s.mode && (
+        s.image.texture.key.endsWith(attachmentName)
+        || s.image.texture.key.includes(`:${attachmentName}`)
+      ),
+    );
+    if (slot) display.bringToTop(slot.image);
+  };
+  for (const attachmentName of DRAW_ORDER) {
+    if (attachmentName === 'право кулак' && shieldImage) {
+      display.bringToTop(shieldImage);
+    }
+    raisePart(attachmentName);
+  }
+
   const armature: GladiatorArmature = {
     root,
     space,
@@ -488,14 +532,20 @@ export function createGladiatorArmature(
     slots,
     rest,
     tweenProxies: [],
+    idleProxies: [],
     actionEpoch: 0,
+    idleEpoch: 0,
     impactTimer: null,
     playing: false,
+    idling: false,
   };
 
   syncArmatureDisplays(armature);
   scene.events.on('update', () => {
-    if (root.active) syncArmatureDisplays(armature);
+    if (root.active) {
+      syncArmatureDisplays(armature);
+      if (armature.boneDebug) drawArmatureBoneDebug(armature);
+    }
   });
 
   const scale = gladiatorRigScale * scaleMul;
@@ -503,13 +553,465 @@ export function createGladiatorArmature(
   root.setData('homeX', x);
   root.setData('homeY', y);
 
+  // Пружинный idle сразу после сборки — бойцы «живые» ещё до первого удара.
+  startIdleSpring(scene, armature);
+
   return armature;
+}
+
+/** Длины костей из ske — для debug tip (hip→knee→ankle). */
+const BONE_LENGTH: Record<string, number> = {
+  Левая_нога: 258.09,
+  леваяГолень: 207.75,
+  ПраваяНога: 282.46,
+  право_голень: 278.73,
+};
+
+/** World-space точка кости (и tip вдоль local +X length). */
+function boneWorldPoint(
+  bone: Phaser.GameObjects.Container,
+  localX = 0,
+  localY = 0,
+): { x: number; y: number } {
+  const world = new Phaser.GameObjects.Components.TransformMatrix();
+  bone.getWorldTransformMatrix(world);
+  const out = new Phaser.Math.Vector2();
+  world.transformPoint(localX, localY, out);
+  return { x: out.x, y: out.y };
+}
+
+/** Точка кости в координатах armature.space (для фиксации стоп). */
+function bonePointInSpace(
+  bone: Phaser.GameObjects.Container,
+  space: Phaser.GameObjects.Container,
+  localX = 0,
+  localY = 0,
+): { x: number; y: number } {
+  const world = new Phaser.GameObjects.Components.TransformMatrix();
+  const spaceWorld = new Phaser.GameObjects.Components.TransformMatrix();
+  const inv = new Phaser.GameObjects.Components.TransformMatrix();
+  bone.getWorldTransformMatrix(world);
+  space.getWorldTransformMatrix(spaceWorld);
+  inv.copyFrom(spaceWorld).invert();
+  const tip = new Phaser.Math.Vector2();
+  world.transformPoint(localX, localY, tip);
+  const out = new Phaser.Math.Vector2();
+  inv.transformPoint(tip.x, tip.y, out);
+  return { x: out.x, y: out.y };
+}
+
+function ankleInSpace(
+  armature: GladiatorArmature,
+  shinName: string,
+): { x: number; y: number } | null {
+  const shin = armature.bones.get(shinName);
+  if (!shin) return null;
+  return bonePointInSpace(shin, armature.space, BONE_LENGTH[shinName] ?? 200, 0);
+}
+
+function hipInSpace(
+  armature: GladiatorArmature,
+  thighName: string,
+): { x: number; y: number } | null {
+  const thigh = armature.bones.get(thighName);
+  if (!thigh) return null;
+  return bonePointInSpace(thigh, armature.space, 0, 0);
+}
+
+/**
+ * 2-bone IK в space: бедро+голень тянут tip к target.
+ * Выбираем решение с коленом дальше в +X (вперёд к сопернику).
+ * root.rotation ≈ 0 → thigh.local = world-in-space angle.
+ */
+function solveLegIkToAnkle(
+  hip: { x: number; y: number },
+  target: { x: number; y: number },
+  thighLen: number,
+  shinLen: number,
+): { thighRad: number; shinLocalRad: number } | null {
+  const dx = target.x - hip.x;
+  const dy = target.y - hip.y;
+  let dist = Math.hypot(dx, dy);
+  const maxReach = thighLen + shinLen - 0.5;
+  const minReach = Math.abs(thighLen - shinLen) + 0.5;
+  if (dist < 1e-3) return null;
+  dist = Phaser.Math.Clamp(dist, minReach, maxReach);
+
+  const angleToTarget = Math.atan2(dy, dx);
+  const cosA = (thighLen * thighLen + dist * dist - shinLen * shinLen) / (2 * thighLen * dist);
+  const a = Math.acos(Phaser.Math.Clamp(cosA, -1, 1));
+
+  let best:
+    | { thighRad: number; shinLocalRad: number; kneeX: number }
+    | null = null;
+  for (const thighRad of [angleToTarget - a, angleToTarget + a]) {
+    const kneeX = hip.x + thighLen * Math.cos(thighRad);
+    const kneeY = hip.y + thighLen * Math.sin(thighRad);
+    const shinWorld = Math.atan2(target.y - kneeY, target.x - kneeX);
+    const shinLocalRad = shinWorld - thighRad;
+    if (!best || kneeX > best.kneeX) {
+      best = { thighRad, shinLocalRad, kneeX };
+    }
+  }
+  return best ? { thighRad: best.thighRad, shinLocalRad: best.shinLocalRad } : null;
+}
+
+/**
+ * IK с учётом rest-смещения голени (sx,sy): бедро направлено к rest-shin,
+ * shin.local доводит tip до planted target.
+ */
+function ikLegToPlanted(
+  armature: GladiatorArmature,
+  thighName: string,
+  shinName: string,
+  planted: { x: number; y: number },
+): void {
+  const thigh = armature.bones.get(thighName);
+  const shin = armature.bones.get(shinName);
+  const shinRest = armature.rest.get(shinName);
+  if (!thigh || !shin || !shinRest) return;
+  const hip = hipInSpace(armature, thighName);
+  if (!hip) return;
+
+  const thighLen = Math.hypot(shinRest.x, shinRest.y);
+  const shinLen = BONE_LENGTH[shinName] ?? 200;
+  const restShinAngle = Math.atan2(shinRest.y, shinRest.x);
+
+  // Решаем IK как будто бедро направлено в restShinAngle local;
+  // thigh.rotation = solvedDir - restShinAngle.
+  const solved = solveLegIkToAnkle(hip, planted, thighLen, shinLen);
+  if (!solved) return;
+  thigh.rotation = solved.thighRad - restShinAngle;
+  // shin.local: world shin dir relative to thigh world (= thigh.rotation)
+  // solveLeg returns shinLocal relative to thighLen-axis (= solved.thighRad).
+  // Actual shin bone +X at thigh.rotation; tip along +X by shinLen.
+  // Knee is at R(thigh.rot)*restShin = direction solved.thighRad.
+  // Shin world should be solved.thighRad + solved.shinLocalRad.
+  // shin.local = shinWorld - thigh.rotation
+  //            = solved.thighRad + solved.shinLocalRad - (solved.thighRad - restShinAngle)
+  //            = solved.shinLocalRad + restShinAngle
+  shin.rotation = solved.shinLocalRad + restShinAngle;
+}
+
+/**
+ * Фиксирует ОБЕ стопы на individual planted targets (не только mid).
+ * Root → mid-hip над mid-feet; per-leg IK; затем дожимаем residual root-ом.
+ */
+function plantBothFeetIk(
+  armature: GladiatorArmature,
+  rootBone: Phaser.GameObjects.Container,
+  _rootRest: BoneRest,
+  plantedLeft: { x: number; y: number },
+  plantedRight: { x: number; y: number },
+  targetMidHipY: number,
+  hipForwardBiasX = 22,
+): void {
+  const midPlantX = (plantedLeft.x + plantedRight.x) * 0.5;
+
+  for (let pass = 0; pass < 4; pass++) {
+    const lHip = hipInSpace(armature, 'Левая_нога');
+    const rHip = hipInSpace(armature, 'ПраваяНога');
+    if (!lHip || !rHip) return;
+    const midHipX = (lHip.x + rHip.x) * 0.5;
+    const midHipY = (lHip.y + rHip.y) * 0.5;
+    rootBone.setPosition(
+      rootBone.x + (midPlantX + hipForwardBiasX - midHipX),
+      rootBone.y + (targetMidHipY - midHipY),
+    );
+
+    ikLegToPlanted(armature, 'Левая_нога', 'леваяГолень', plantedLeft);
+    ikLegToPlanted(armature, 'ПраваяНога', 'право_голень', plantedRight);
+
+    // Residual mid correction (catches length/matrix drift).
+    const left = ankleInSpace(armature, 'леваяГолень');
+    const right = ankleInSpace(armature, 'право_голень');
+    if (!left || !right) return;
+    const errX = ((plantedLeft.x - left.x) + (plantedRight.x - right.x)) * 0.5;
+    const errY = ((plantedLeft.y - left.y) + (plantedRight.y - right.y)) * 0.5;
+    rootBone.setPosition(rootBone.x + errX, rootBone.y + errY);
+    // Re-IK after residual root nudge so each foot tracks its target.
+    ikLegToPlanted(armature, 'Левая_нога', 'леваяГолень', plantedLeft);
+    ikLegToPlanted(armature, 'ПраваяНога', 'право_голень', plantedRight);
+  }
+}
+
+/** Включить/выключить оверлей костей ног (hip/knee/ankle) в screen/world space. */
+export function setArmatureBoneDebug(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  enabled: boolean,
+): void {
+  if (!enabled) {
+    armature.boneDebug?.destroy();
+    armature.boneDebug = undefined;
+    for (const slot of armature.slots) {
+      if (slot.mode) continue;
+      const key = slot.image.texture.key;
+      if (/бедр|голен/.test(key)) slot.image.clearTint();
+    }
+    return;
+  }
+  if (!armature.boneDebug) {
+    // Scene-level graphics (не child space) — координаты = world/camera.
+    const g = scene.add.graphics();
+    g.setDepth(10000);
+    armature.boneDebug = g;
+  }
+  // Replace tint: multiplicative tint on orange art is weak — use additive-ish bright colors
+  // via setTintFill for unmistakable separation.
+  for (const slot of armature.slots) {
+    if (slot.mode) continue;
+    const key = slot.image.texture.key;
+    if (key.includes('бедро')) slot.image.setTintFill(0xff22aa);
+    else if (key.includes('голень')) slot.image.setTintFill(0x00e5ff);
+  }
+  drawArmatureBoneDebug(armature);
+}
+
+function drawArmatureBoneDebug(armature: GladiatorArmature): void {
+  const g = armature.boneDebug;
+  if (!g) return;
+  g.clear();
+  g.setDepth(10000);
+
+  const spaceWorld = new Phaser.GameObjects.Components.TransformMatrix();
+  armature.space.getWorldTransformMatrix(spaceWorld);
+  const plantedWorld = (
+    p: { x: number; y: number },
+  ): { x: number; y: number } => {
+    const out = new Phaser.Math.Vector2();
+    spaceWorld.transformPoint(p.x, p.y, out);
+    return { x: out.x, y: out.y };
+  };
+
+  // FROZEN plant lines from stand capture (not current ankles).
+  if (armature.plantedAnkles) {
+    for (const p of [armature.plantedAnkles.left, armature.plantedAnkles.right]) {
+      const w = plantedWorld(p);
+      g.lineStyle(2, 0xffee00, 0.95);
+      g.lineBetween(w.x, 0, w.x, 2000);
+      g.fillStyle(0xffee00, 0.35);
+      g.fillCircle(w.x, w.y, 11);
+    }
+  }
+
+  const chains: Array<[string, string]> = [
+    ['Левая_нога', 'леваяГолень'],
+    ['ПраваяНога', 'право_голень'],
+  ];
+  for (const [thighName, shinName] of chains) {
+    const thigh = armature.bones.get(thighName);
+    const shin = armature.bones.get(shinName);
+    if (!thigh || !shin) continue;
+    const hip = boneWorldPoint(thigh);
+    const knee = boneWorldPoint(shin);
+    const ankle = boneWorldPoint(shin, BONE_LENGTH[shinName] ?? 200, 0);
+
+    // Stack check: hip → current ankle
+    g.lineStyle(3, 0xff3355, 0.9);
+    g.lineBetween(hip.x, hip.y, ankle.x, ankle.y);
+
+    g.lineStyle(5, 0x22ff66, 1);
+    g.lineBetween(hip.x, hip.y, knee.x, knee.y);
+    g.lineStyle(5, 0x00ddff, 1);
+    g.lineBetween(knee.x, knee.y, ankle.x, ankle.y);
+
+    const dot = (x: number, y: number, color: number, r = 9): void => {
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(x, y, r + 2);
+      g.fillStyle(color, 1);
+      g.fillCircle(x, y, r);
+    };
+    dot(hip.x, hip.y, 0xff2200);
+    dot(knee.x, knee.y, 0xffee00);
+    dot(ankle.x, ankle.y, 0x2266ff);
+  }
+}
+
+/**
+ * Заморозить classic stacked squat для proof/debug.
+ * Обе стопы — IK к individual planted targets (residual ≈ 0).
+ */
+export function freezeExaggeratedSquat(armature: GladiatorArmature, _shinFlexDeg = 100): void {
+  const rootBone = armature.bones.get('root');
+  const body = armature.bones.get('тело');
+  const leftThigh = armature.bones.get('Левая_нога');
+  const rightThigh = armature.bones.get('ПраваяНога');
+  const leftShin = armature.bones.get('леваяГолень');
+  const rightShin = armature.bones.get('право_голень');
+  const rootRest = armature.rest.get('root');
+  const bodyRest = armature.rest.get('тело');
+  const leftThighRest = armature.rest.get('Левая_нога');
+  const rightThighRest = armature.rest.get('ПраваяНога');
+  if (!rootBone || !body || !leftThigh || !rightThigh || !leftShin || !rightShin) return;
+  if (!rootRest || !bodyRest || !leftThighRest || !rightThighRest) return;
+
+  rootBone.setPosition(rootRest.x, rootRest.y);
+  leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+  rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+  leftShin.rotation = 0;
+  rightShin.rotation = 0;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle);
+  const plantedLeft = ankleInSpace(armature, 'леваяГолень');
+  const plantedRight = ankleInSpace(armature, 'право_голень');
+  const standLHip = hipInSpace(armature, 'Левая_нога');
+  const standRHip = hipInSpace(armature, 'ПраваяНога');
+  if (!plantedLeft || !plantedRight || !standLHip || !standRHip) return;
+  armature.plantedAnkles = { left: plantedLeft, right: plantedRight };
+
+  const standMidHipY = (standLHip.y + standRHip.y) * 0.5;
+  // Dip hips for readable squat while feet stay planted via IK.
+  const SQUAT_HIP_DIP = 160;
+  const TORSO_LEAN_DEG = 26;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle + TORSO_LEAN_DEG);
+  plantBothFeetIk(
+    armature,
+    rootBone,
+    rootRest,
+    plantedLeft,
+    plantedRight,
+    standMidHipY + SQUAT_HIP_DIP,
+    22,
+  );
+  syncArmatureDisplays(armature);
+  if (armature.boneDebug) drawArmatureBoneDebug(armature);
+}
+
+/** Останавливает idle, оставляя кости в текущей позе (для blend в атаку/блок). */
+function stopIdleSpring(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+): void {
+  armature.idleEpoch += 1;
+  armature.idling = false;
+  for (const proxy of armature.idleProxies) scene.tweens.killTweensOf(proxy);
+  armature.idleProxies = [];
+}
+
+/**
+ * Idle squat ↔ rise: fixed-foot via per-ankle 2-bone IK.
+ *
+ * Tween only squatT (0=stand, 1=squat) + torso lean.
+ * Each frame: place hips over planted mid-feet at lerped height, IK both
+ * legs to individual stand ankle targets → per-foot residual ≈ 0.
+ */
+export function startIdleSpring(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+): void {
+  if (!armature.root.active || armature.playing || armature.idling) return;
+  stopIdleSpring(scene, armature);
+  armature.idling = true;
+  const epoch = armature.idleEpoch;
+
+  const rootBone = armature.bones.get('root');
+  const body = armature.bones.get('тело');
+  const leftThigh = armature.bones.get('Левая_нога');
+  const rightThigh = armature.bones.get('ПраваяНога');
+  const leftShin = armature.bones.get('леваяГолень');
+  const rightShin = armature.bones.get('право_голень');
+
+  const rootRest = armature.rest.get('root');
+  const bodyRest = armature.rest.get('тело');
+  const leftThighRest = armature.rest.get('Левая_нога');
+  const rightThighRest = armature.rest.get('ПраваяНога');
+  if (!body || !bodyRest || !rootBone || !rootRest) return;
+  if (!leftThigh || !rightThigh || !leftShin || !rightShin) return;
+  if (!leftThighRest || !rightThighRest) return;
+
+  const stillIdle = (): boolean => (
+    epoch === armature.idleEpoch && armature.idling && !armature.playing && armature.root.active
+  );
+
+  const TORSO_LEAN_DEG = 26;
+  const SQUAT_HIP_DIP = 160;
+
+  // Capture individual planted ankles + stand hip height at rest.
+  rootBone.setPosition(rootRest.x, rootRest.y);
+  leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+  rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+  leftShin.rotation = 0;
+  rightShin.rotation = 0;
+  body.rotation = Phaser.Math.DegToRad(bodyRest.angle);
+  const plantedLeft = ankleInSpace(armature, 'леваяГолень');
+  const plantedRight = ankleInSpace(armature, 'право_голень');
+  const standLHip = hipInSpace(armature, 'Левая_нога');
+  const standRHip = hipInSpace(armature, 'ПраваяНога');
+  if (!plantedLeft || !plantedRight || !standLHip || !standRHip) return;
+  armature.plantedAnkles = { left: { ...plantedLeft }, right: { ...plantedRight } };
+  const standMidHipY = (standLHip.y + standRHip.y) * 0.5;
+
+  const pose = { squatT: 0, torso: bodyRest.angle };
+  armature.idleProxies.push(pose);
+
+  const applyPose = (): void => {
+    body.rotation = Phaser.Math.DegToRad(pose.torso);
+    const hipY = standMidHipY + SQUAT_HIP_DIP * pose.squatT;
+    // Seed root near rest before IK placement (first pass uses current).
+    if (pose.squatT < 0.001) {
+      rootBone.setPosition(rootRest.x, rootRest.y);
+      leftThigh.rotation = Phaser.Math.DegToRad(leftThighRest.angle);
+      rightThigh.rotation = Phaser.Math.DegToRad(rightThighRest.angle);
+      leftShin.rotation = 0;
+      rightShin.rotation = 0;
+    }
+    plantBothFeetIk(
+      armature,
+      rootBone,
+      rootRest,
+      plantedLeft,
+      plantedRight,
+      hipY,
+      22,
+    );
+    if (armature.boneDebug) drawArmatureBoneDebug(armature);
+  };
+
+  const tweenPose = (
+    squatT: number,
+    torso: number,
+    duration: number,
+    ease: string,
+    onComplete?: () => void,
+  ): void => {
+    scene.tweens.add({
+      targets: pose,
+      squatT,
+      torso,
+      duration,
+      ease,
+      onUpdate: applyPose,
+      onComplete: () => {
+        if (!stillIdle()) return;
+        onComplete?.();
+      },
+    });
+  };
+
+  const runSquatCycle = (): void => {
+    if (!stillIdle()) return;
+    tweenPose(1, bodyRest.angle + TORSO_LEAN_DEG, 720, 'Sine.InOut', () => {
+      scene.time.delayedCall(700, () => {
+        if (!stillIdle()) return;
+        tweenPose(0, bodyRest.angle, 640, 'Sine.Out', () => {
+          scene.time.delayedCall(180, () => {
+            if (stillIdle()) runSquatCycle();
+          });
+        });
+      });
+    });
+  };
+
+  applyPose();
+  tweenPose(0, bodyRest.angle, 160, 'Sine.Out', () => runSquatCycle());
 }
 
 export function stopArmatureAnimation(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
 ): void {
+  // Сначала гасим idle, не сбрасывая позу — атака/блок блендятся из текущего дыхания.
+  stopIdleSpring(scene, armature);
   for (const bone of armature.bones.values()) scene.tweens.killTweensOf(bone);
   for (const proxy of armature.tweenProxies) scene.tweens.killTweensOf(proxy);
   armature.tweenProxies = [];
@@ -521,13 +1023,18 @@ export function stopArmatureAnimation(
   armature.playing = false;
 }
 
-/** Обрыв текущей атаки/анимации с возвратом в rest. */
+/** Мягкий возврат в rest вместо мгновенного snap (убирает «каменный» обрыв). */
+const SETTLE_MS = 110;
+/** Короткий довод костей, которых нет в боевом клипе, из idle-оффсета в rest. */
+const IDLE_HANDOFF_MS = 100;
+
+/** Обрыв текущей атаки/анимации с плавным возвратом в rest + idle. */
 export function interruptArmature(
   scene: Phaser.Scene,
   armature: GladiatorArmature,
 ): void {
   stopArmatureAnimation(scene, armature);
-  resetArmaturePose(armature);
+  settleArmatureToRest(scene, armature, SETTLE_MS);
 }
 
 export function resetArmaturePose(armature: GladiatorArmature): void {
@@ -537,6 +1044,98 @@ export function resetArmaturePose(armature: GladiatorArmature): void {
   }
   // Не сбрасываем smoothRot — иначе щит на конце анимации дёргается.
   syncArmatureDisplays(armature);
+}
+
+/** Плавный довод костей к rest-позе (Cubic.Out), затем пружинный idle. */
+function settleArmatureToRest(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  durationMs: number,
+  onComplete?: () => void,
+): void {
+  const epoch = armature.actionEpoch;
+  let pending = 0;
+
+  const finishSettle = (): void => {
+    if (epoch !== armature.actionEpoch) return;
+    resetArmaturePose(armature);
+    onComplete?.();
+    if (epoch === armature.actionEpoch && !armature.playing) {
+      startIdleSpring(scene, armature);
+    }
+  };
+
+  const done = (): void => {
+    if (epoch !== armature.actionEpoch) return;
+    pending -= 1;
+    if (pending > 0) return;
+    finishSettle();
+  };
+
+  for (const [name, bone] of armature.bones) {
+    const pose = armature.rest.get(name);
+    if (!pose) continue;
+    const curDeg = Phaser.Math.RadToDeg(bone.rotation);
+    const needAngle = Math.abs(curDeg - pose.angle) > 0.2;
+    const needPos = Math.abs(bone.x - pose.x) > 0.4 || Math.abs(bone.y - pose.y) > 0.4;
+    if (!needAngle && !needPos) continue;
+
+    pending += 1;
+    const state: Record<string, number> = {};
+    const tweenTo: Record<string, number> = {};
+    if (needAngle) {
+      state.deg = curDeg;
+      tweenTo.deg = pose.angle;
+    }
+    if (needPos) {
+      state.x = bone.x;
+      state.y = bone.y;
+      tweenTo.x = pose.x;
+      tweenTo.y = pose.y;
+    }
+    armature.tweenProxies.push(state);
+    scene.tweens.add({
+      targets: state,
+      ...tweenTo,
+      duration: durationMs,
+      ease: 'Cubic.Out',
+      onUpdate: () => {
+        if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
+        if (state.x !== undefined) bone.setX(state.x);
+        if (state.y !== undefined) bone.setY(state.y);
+      },
+      onComplete: done,
+    });
+  }
+
+  if (pending === 0) {
+    finishSettle();
+  }
+}
+
+/**
+ * Сегментный easing для редких Spine-ключей без curve:
+ * уход от rest — разгон (удар/замах), возврат — торможение, иначе мягкий InOut.
+ */
+function segmentEase(
+  from: Record<string, number>,
+  to: Record<string, number>,
+  restAngle?: number,
+): string {
+  if (from.deg !== undefined && to.deg !== undefined && restAngle !== undefined) {
+    const fromDev = Math.abs(from.deg - restAngle);
+    const toDev = Math.abs(to.deg - restAngle);
+    if (toDev > fromDev + 0.5) return 'Cubic.In';
+    if (fromDev > toDev + 0.5) return 'Cubic.Out';
+  }
+  if (from.x !== undefined || from.y !== undefined) {
+    const fromDist = Math.hypot(from.x ?? 0, from.y ?? 0);
+    const toDist = Math.hypot(to.x ?? 0, to.y ?? 0);
+    // translate в скелете — абсолютные координаты кости, не дельта от rest;
+    // для чистого x/y без angle используем Sine.InOut.
+    if (Math.abs(toDist - fromDist) > 8) return 'Sine.InOut';
+  }
+  return 'Sine.InOut';
 }
 
 /**
@@ -551,6 +1150,7 @@ function tweenKeyframes(
   keys: Array<{ time: number; props: Record<string, number> }>,
   onSegmentEnd?: (endedAt: number) => void,
   onTrackDone?: () => void,
+  options: { fromCurrent?: boolean; restAngle?: number; handoffEase?: string } = {},
 ): void {
   const play = (index: number): void => {
     const current = keys[index];
@@ -559,12 +1159,17 @@ function tweenKeyframes(
       onTrackDone?.();
       return;
     }
-    if (current.props.angle !== undefined) {
-      bone.rotation = Phaser.Math.DegToRad(current.props.angle);
+
+    const blendFromPose = Boolean(options.fromCurrent) && index === 0;
+    if (!blendFromPose) {
+      if (current.props.angle !== undefined) {
+        bone.rotation = Phaser.Math.DegToRad(current.props.angle);
+      }
+      if (current.props.x !== undefined) bone.setX(current.props.x);
+      if (current.props.y !== undefined) bone.setY(current.props.y);
+      syncArmatureDisplays(armature);
     }
-    if (current.props.x !== undefined) bone.setX(current.props.x);
-    if (current.props.y !== undefined) bone.setY(current.props.y);
-    syncArmatureDisplays(armature);
+
     if (!next) {
       onTrackDone?.();
       return;
@@ -573,23 +1178,29 @@ function tweenKeyframes(
     const state: Record<string, number> = {};
     const tweenTo: Record<string, number> = {};
     if (next.props.angle !== undefined) {
-      state.deg = current.props.angle ?? Phaser.Math.RadToDeg(bone.rotation);
+      state.deg = blendFromPose
+        ? Phaser.Math.RadToDeg(bone.rotation)
+        : (current.props.angle ?? Phaser.Math.RadToDeg(bone.rotation));
       tweenTo.deg = next.props.angle;
     }
     if (next.props.x !== undefined) {
-      state.x = current.props.x ?? bone.x;
+      state.x = blendFromPose ? bone.x : (current.props.x ?? bone.x);
       tweenTo.x = next.props.x;
     }
     if (next.props.y !== undefined) {
-      state.y = current.props.y ?? bone.y;
+      state.y = blendFromPose ? bone.y : (current.props.y ?? bone.y);
       tweenTo.y = next.props.y;
     }
+    // Выход из idle: мягкий Sine.Out, дальше — сегментный combat-easing.
+    const ease = blendFromPose && options.handoffEase
+      ? options.handoffEase
+      : segmentEase(state, tweenTo, options.restAngle);
     armature.tweenProxies.push(state);
     scene.tweens.add({
       targets: state,
       ...tweenTo,
       duration,
-      ease: 'Linear',
+      ease,
       onUpdate: () => {
         if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
         if (state.x !== undefined) bone.setX(state.x);
@@ -602,6 +1213,48 @@ function tweenKeyframes(
     });
   };
   play(0);
+}
+
+/** Кости с idle-оффсетом, которых нет в клипе, плавно возвращаем в rest. */
+function handoffIdleOrphansToRest(
+  scene: Phaser.Scene,
+  armature: GladiatorArmature,
+  animatedBones: Set<string>,
+): void {
+  for (const [name, bone] of armature.bones) {
+    if (animatedBones.has(name)) continue;
+    const pose = armature.rest.get(name);
+    if (!pose) continue;
+    const curDeg = Phaser.Math.RadToDeg(bone.rotation);
+    const needAngle = Math.abs(curDeg - pose.angle) > 0.15;
+    const needPos = Math.abs(bone.x - pose.x) > 0.3 || Math.abs(bone.y - pose.y) > 0.3;
+    if (!needAngle && !needPos) continue;
+
+    const state: Record<string, number> = {};
+    const tweenTo: Record<string, number> = {};
+    if (needAngle) {
+      state.deg = curDeg;
+      tweenTo.deg = pose.angle;
+    }
+    if (needPos) {
+      state.x = bone.x;
+      state.y = bone.y;
+      tweenTo.x = pose.x;
+      tweenTo.y = pose.y;
+    }
+    armature.tweenProxies.push(state);
+    scene.tweens.add({
+      targets: state,
+      ...tweenTo,
+      duration: IDLE_HANDOFF_MS,
+      ease: 'Sine.Out',
+      onUpdate: () => {
+        if (state.deg !== undefined) bone.rotation = Phaser.Math.DegToRad(state.deg);
+        if (state.x !== undefined) bone.setX(state.x);
+        if (state.y !== undefined) bone.setY(state.y);
+      },
+    });
+  }
 }
 
 export type PlayAnimOptions = {
@@ -618,13 +1271,19 @@ export function playArmatureAnimation(
   options: PlayAnimOptions = {},
 ): number {
   const anim = requireAnim(animationName);
+  // stopIdle внутри: поза дыхания сохраняется → fromCurrent блендит в удар/блок.
   stopArmatureAnimation(scene, armature);
-  resetArmaturePose(armature);
   const epoch = armature.actionEpoch;
   armature.playing = true;
 
   let pending = 0;
   let impactDone = false;
+  const animatedBones = new Set<string>([
+    ...anim.rotate.keys(),
+    ...anim.translate.keys(),
+  ]);
+  // Кости только из idle (root bounce и т.п.) — мягко в rest, без hard cut.
+  handoffIdleOrphansToRest(scene, armature, animatedBones);
 
   const finishOne = (): void => {
     if (epoch !== armature.actionEpoch) return;
@@ -632,8 +1291,11 @@ export function playArmatureAnimation(
     if (pending > 0) return;
     armature.playing = false;
     armature.impactTimer = null;
-    resetArmaturePose(armature);
-    options.onComplete?.();
+    // Settle → onComplete → startIdleSpring (внутри settle).
+    settleArmatureToRest(scene, armature, 70, () => {
+      if (epoch !== armature.actionEpoch) return;
+      options.onComplete?.();
+    });
   };
 
   const fireImpact = (): void => {
@@ -659,6 +1321,7 @@ export function playArmatureAnimation(
       keys.map((key) => ({ time: key.time, props: { angle: pose.angle + key.angle } })),
       undefined,
       finishOne,
+      { fromCurrent: true, restAngle: pose.angle, handoffEase: 'Sine.Out' },
     );
   }
 
@@ -677,6 +1340,7 @@ export function playArmatureAnimation(
       })),
       undefined,
       finishOne,
+      { fromCurrent: true, handoffEase: 'Sine.Out' },
     );
   }
 
@@ -687,6 +1351,7 @@ export function playArmatureAnimation(
       fireImpact();
     }
     options.onComplete?.();
+    startIdleSpring(scene, armature);
   }
 
   return anim.duration * 1000;
