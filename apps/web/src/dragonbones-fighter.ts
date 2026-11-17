@@ -222,25 +222,26 @@ type SlotBinding = {
 /**
  * Порядок отрисовки (сзади → спереди):
  * рука с мечом и дальняя (левая) нога за корпусом;
- * правая рука без меча — поверх всего.
+ * ближняя (правая) нога ПОВЕРХ щита — иначе щит закрывает колено и
+ * сгиб 180°→100° читается как «прямая палка» из торчащей голени.
  */
 const DRAW_ORDER = [
   // рука с мечом и дальняя нога — строго за корпусом
   'лево_плечо',
   'лево_предплечЬе',
   'лево_кулак_меч',
-  // бедро ПОД голенью: иначе сгиб колена на 100° полностью прячется под спрайтом бедра
+  // бедро ПОД голенью: иначе сгиб колена прячется под спрайтом бедра
   'лево_бедро',
   'лево_голень',
   'тело',
-  'право_бедро',
-  'право_голень',
   'голова',
-  // правая рука без меча — поверх всего (плечо → предплечье → кулак)
+  // правая рука + щит (щит вставляется кодом перед кулаком)
   'право_плечо',
   'предплечъе левое',
-  // щит вставляется кодом перед кулаком
   'право кулак',
+  // ближняя нога поверх щита — читаемый шарнир колена
+  'право_бедро',
+  'право_голень',
 ] as const;
 
 export type GladiatorArmature = {
@@ -461,7 +462,21 @@ export function createGladiatorArmature(
     });
   }
 
+  // Бедро в ske чуть длиннее кости и перекрывает шарнир: слегка укорачиваем
+  // по оси кости, чтобы сгиб голени читался (право длиннее — сильнее trim).
+  for (const slot of slots) {
+    const key = slot.image.texture.key;
+    if (key.endsWith('право_бедро') || key.includes(':право_бедро')) {
+      slot.localScaleY *= 0.82;
+      slot.localX *= 0.92;
+    } else if (key.endsWith('лево_бедро') || key.includes(':лево_бедро')) {
+      slot.localScaleY *= 0.9;
+      slot.localX *= 0.96;
+    }
+  }
+
   // Щит 3/4 — позиция на кулаке, угол с предплечья (плавно с рукой).
+  let shieldImage: Phaser.GameObjects.Image | null = null;
   if (shieldKind) {
     const shieldBone = bones.get('ПравоКулак');
     const forearm = bones.get('ПредплъечьеПраво') ?? shieldBone;
@@ -472,6 +487,7 @@ export function createGladiatorArmature(
     if (tint !== 0xffffff) shield.setTint(tint);
     display.add(shield);
     images.push(shield);
+    shieldImage = shield;
     slots.push({
       image: shield,
       bone: shieldBone,
@@ -484,6 +500,24 @@ export function createGladiatorArmature(
       localScaleX: isBuckler ? 0.42 : 0.52,
       localScaleY: isBuckler ? 0.42 : 0.52,
     });
+  }
+
+  // display.add(shield) кладёт щит сверху всех слотов — поднимаем порядок заново:
+  // …предплечье → щит → кулак → ближнее бедро → ближняя голень (колено не под щитом).
+  const raisePart = (attachmentName: string): void => {
+    const slot = slots.find(
+      (s) => !s.mode && (
+        s.image.texture.key.endsWith(attachmentName)
+        || s.image.texture.key.includes(`:${attachmentName}`)
+      ),
+    );
+    if (slot) display.bringToTop(slot.image);
+  };
+  for (const attachmentName of DRAW_ORDER) {
+    if (attachmentName === 'право кулак' && shieldImage) {
+      display.bringToTop(shieldImage);
+    }
+    raisePart(attachmentName);
   }
 
   const armature: GladiatorArmature = {
@@ -537,10 +571,11 @@ function stopIdleSpring(
  * - голень: `леваяГолень` ← `лево_голень`; `право_голень` ← `право_голень`
  * Голень — child бедра; shin.local — шарнир колена:
  * - shin.local = 0° → передний угол бедро/голень = 180° (прямо)
- * - |shin.local| = 80° → задний угол бедро/икра = 100°
- * - тело lean +12° в приседе; root.y только вниз (dip), без hop вверх
- * Знаки сгиба подобраны так, чтобы оба колена складывались «под себя»
- * (не ножницы/выпад). Голень рисуется ПОВЕРХ бедра — иначе сгиб не видно.
+ * - shin.local = +80° → задний угол бедро/икра = 100°
+ * Бедра в приседе крутим к горизонту «вперёд» (отрицательный delta от rest ~90°↓),
+ * чтобы колени вышли из-под щита/торса и силуэт читался как L / ~100°.
+ * Тело lean +14°; root.y только вниз (dip), без hop вверх.
+ * Ближняя нога в DRAW_ORDER выше щита — иначе сгиб снова прячется.
  */
 export function startIdleSpring(
   scene: Phaser.Scene,
@@ -572,16 +607,19 @@ export function startIdleSpring(
 
   const KNEE_REAR_BENT_DEG = 100;
   const SHIN_FLEX_DEG = 180 - KNEE_REAR_BENT_DEG; // 80°
-  const TORSO_LEAN_DEG = 12;
-  /** Оба бедра в одну сторону — присед, не ножницы. */
-  const LEFT_THIGH_SQUAT = 28;
-  const RIGHT_THIGH_SQUAT = 22;
+  const TORSO_LEAN_DEG = 14;
+  /**
+   * Rest бёдер ~79–94° (вниз). Отрицательный delta → колени вперёд к сопернику,
+   * бедро ближе к горизонту, голень +80° даёт читаемый L (~100° сзади).
+   */
+  const LEFT_THIGH_SQUAT = -72;
+  const RIGHT_THIGH_SQUAT = -68;
   /** Опускание таза в bone-space (только вниз от rest — не hop вверх). */
-  const ROOT_DIP_Y = 95;
+  const ROOT_DIP_Y = 380;
 
-  // Сгиб «под себя»: левая +, правая − (как в rest-оффсетах рига).
+  // Оба голени в одну сторону: при коленях вперёд складывают стопы под таз.
   const LEFT_SHIN_SIGN = 1;
-  const RIGHT_SHIN_SIGN = -1;
+  const RIGHT_SHIN_SIGN = 1;
 
   const pose = {
     leftThigh: Phaser.Math.RadToDeg(leftThigh.rotation),
@@ -645,13 +683,13 @@ export function startIdleSpring(
 
   const runSquatCycle = (): void => {
     if (!stillIdle()) return;
-    // Присед: 180° → ~100° сзади, lean, dip; держим читаемый кадр.
-    tweenPose(squat, 700, 'Sine.InOut', () => {
-      scene.time.delayedCall(160, () => {
+    // Присед: 180° → ~100° сзади, lean, dip; держим читаемый кадр дольше.
+    tweenPose(squat, 720, 'Sine.InOut', () => {
+      scene.time.delayedCall(700, () => {
         if (!stillIdle()) return;
         // Подъём без hop-overshoot вверх.
         tweenPose(straight, 640, 'Sine.Out', () => {
-          scene.time.delayedCall(140, () => {
+          scene.time.delayedCall(180, () => {
             if (stillIdle()) runSquatCycle();
           });
         });
